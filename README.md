@@ -33,6 +33,53 @@ go run ./cmd/myclaw gateway
 go run ./cmd/myclaw status
 ```
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      CLI (cobra)                        │
+│              agent | gateway | onboard | status          │
+└──────┬──────────────────┬───────────────────────────────┘
+       │                  │
+       ▼                  ▼
+┌──────────────┐  ┌───────────────────────────────────────┐
+│  Agent Mode  │  │              Gateway                  │
+│  (single /   │  │                                       │
+│   REPL)      │  │  ┌─────────┐  ┌──────┐  ┌─────────┐  │
+└──────┬───────┘  │  │ Channel │  │ Cron │  │Heartbeat│  │
+       │          │  │ Manager │  │      │  │         │  │
+       │          │  └────┬────┘  └──┬───┘  └────┬────┘  │
+       │          │       │          │           │        │
+       ▼          │       ▼          ▼           ▼        │
+┌──────────────┐  │  ┌─────────────────────────────────┐  │
+│  agentsdk-go │  │  │          Message Bus             │  │
+│   Runtime    │◄─┤  │    Inbound ←── Channels          │  │
+│              │  │  │    Outbound ──► Channels          │  │
+└──────────────┘  │  └──────────────┬──────────────────┘  │
+                  │                 │                      │
+                  │                 ▼                      │
+                  │  ┌──────────────────────────────────┐  │
+                  │  │      agentsdk-go Runtime         │  │
+                  │  │   (ReAct loop + tool execution)  │  │
+                  │  └──────────────────────────────────┘  │
+                  │                                       │
+                  │  ┌──────────┐  ┌────────────────────┐  │
+                  │  │  Memory  │  │      Config        │  │
+                  │  │ (MEMORY  │  │  (JSON + env vars) │  │
+                  │  │  + daily)│  │                    │  │
+                  │  └──────────┘  └────────────────────┘  │
+                  └───────────────────────────────────────┘
+
+Data Flow (Gateway Mode):
+  Telegram ──► Channel ──► Bus.Inbound ──► processLoop
+                                               │
+                                               ▼
+                                        Runtime.Run()
+                                               │
+                                               ▼
+                                        Bus.Outbound ──► Channel ──► Telegram
+```
+
 ## Project Structure
 
 ```

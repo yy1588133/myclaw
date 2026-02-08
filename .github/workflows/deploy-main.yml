@@ -1,0 +1,39 @@
+name: deploy-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_USER != '' && secrets.DEPLOY_SSH_KEY != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add known host
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on remote host
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_REPO_PATH: ${{ secrets.DEPLOY_REPO_PATH }}
+          DEPLOY_SERVICE: ${{ secrets.DEPLOY_SERVICE }}
+        run: |
+          set -euo pipefail
+          REPO_PATH="${DEPLOY_REPO_PATH:-/home/maoyu/apps/myclaw}"
+          SERVICE_NAME="${DEPLOY_SERVICE:-myclaw}"
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "set -e; cd ${REPO_PATH}; git fetch origin; git pull --ff-only origin main; /usr/local/go/bin/go build -o ${REPO_PATH}/bin/myclaw ./cmd/myclaw; sudo systemctl restart ${SERVICE_NAME}; sudo systemctl is-active ${SERVICE_NAME}"

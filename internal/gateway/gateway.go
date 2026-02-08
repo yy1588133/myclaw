@@ -50,11 +50,22 @@ type Options struct {
 
 // DefaultRuntimeFactory creates the default agentsdk-go runtime
 func DefaultRuntimeFactory(cfg *config.Config, sysPrompt string) (Runtime, error) {
-	provider := &model.AnthropicProvider{
-		APIKey:    cfg.Provider.APIKey,
-		BaseURL:   cfg.Provider.BaseURL,
-		ModelName: cfg.Agent.Model,
-		MaxTokens: cfg.Agent.MaxTokens,
+	var provider api.ModelFactory
+	switch cfg.Provider.Type {
+	case "openai":
+		provider = &model.OpenAIProvider{
+			APIKey:    cfg.Provider.APIKey,
+			BaseURL:   cfg.Provider.BaseURL,
+			ModelName: cfg.Agent.Model,
+			MaxTokens: cfg.Agent.MaxTokens,
+		}
+	default: // "anthropic" or empty
+		provider = &model.AnthropicProvider{
+			APIKey:    cfg.Provider.APIKey,
+			BaseURL:   cfg.Provider.BaseURL,
+			ModelName: cfg.Agent.Model,
+			MaxTokens: cfg.Agent.MaxTokens,
+		}
 	}
 
 	rt, err := api.New(context.Background(), api.Options{

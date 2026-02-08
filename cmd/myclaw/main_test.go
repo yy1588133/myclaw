@@ -131,6 +131,7 @@ func TestRunOnboard(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -183,6 +184,7 @@ func TestRunOnboard_AlreadyExists(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -218,6 +220,7 @@ func TestRunStatus(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -256,6 +259,7 @@ func TestRunStatus_WithAPIKey(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "sk-ant-test-key-12345678")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -291,6 +295,7 @@ func TestRunStatus_WithShortAPIKey(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "short")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -331,6 +336,7 @@ func TestRunStatus_WithWorkspace(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -371,6 +377,7 @@ func TestRunStatus_WorkspaceNotFound(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -431,6 +438,7 @@ func TestRunAgent_NoAPIKey(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	err := runAgent(&cobra.Command{}, []string{})
 	if err == nil {
@@ -451,6 +459,7 @@ func TestRunGateway_NoAPIKey(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	err := runGateway(&cobra.Command{}, []string{})
 	if err == nil {
@@ -476,6 +485,7 @@ func TestRunStatus_EmptyMemory(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -533,6 +543,7 @@ func TestRunAgentWithOptions_SingleMessage(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	mockRt := &mockRuntime{
 		response: &api.Response{
@@ -575,6 +586,7 @@ func TestRunAgentWithOptions_REPLMode(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	mockRt := &mockRuntime{
 		response: &api.Response{
@@ -620,6 +632,7 @@ func TestRunAgentWithOptions_REPLMode_EmptyInput(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	mockRt := &mockRuntime{
 		response: &api.Response{
@@ -655,6 +668,7 @@ func TestRunAgentWithOptions_REPLMode_Error(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	mockRt := &mockRuntime{
 		err: context.DeadlineExceeded,
@@ -693,6 +707,7 @@ func TestRunAgentWithOptions_SingleMessage_Error(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	mockRt := &mockRuntime{
 		err: context.DeadlineExceeded,
@@ -723,6 +738,7 @@ func TestRunAgentWithOptions_NilResult(t *testing.T) {
 	t.Setenv("MYCLAW_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	mockRt := &mockRuntime{
 		response: &api.Response{Result: nil},

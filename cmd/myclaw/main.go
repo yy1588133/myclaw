@@ -49,11 +49,22 @@ func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 	mem := memory.NewMemoryStore(cfg.Agent.Workspace)
 	sysPrompt := buildSystemPrompt(cfg, mem)
 
-	provider := &model.AnthropicProvider{
-		APIKey:    cfg.Provider.APIKey,
-		BaseURL:   cfg.Provider.BaseURL,
-		ModelName: cfg.Agent.Model,
-		MaxTokens: cfg.Agent.MaxTokens,
+	var provider api.ModelFactory
+	switch cfg.Provider.Type {
+	case "openai":
+		provider = &model.OpenAIProvider{
+			APIKey:    cfg.Provider.APIKey,
+			BaseURL:   cfg.Provider.BaseURL,
+			ModelName: cfg.Agent.Model,
+			MaxTokens: cfg.Agent.MaxTokens,
+		}
+	default:
+		provider = &model.AnthropicProvider{
+			APIKey:    cfg.Provider.APIKey,
+			BaseURL:   cfg.Provider.BaseURL,
+			ModelName: cfg.Agent.Model,
+			MaxTokens: cfg.Agent.MaxTokens,
+		}
 	}
 
 	rt, err := api.New(context.Background(), api.Options{
@@ -271,6 +282,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Config: %s\n", config.ConfigPath())
 	fmt.Printf("Workspace: %s\n", cfg.Agent.Workspace)
 	fmt.Printf("Model: %s\n", cfg.Agent.Model)
+	fmt.Printf("Provider: %s\n", providerDisplay(cfg.Provider.Type))
 	if cfg.Provider.APIKey != "" && len(cfg.Provider.APIKey) > 8 {
 		masked := cfg.Provider.APIKey[:4] + "..." + cfg.Provider.APIKey[len(cfg.Provider.APIKey)-4:]
 		fmt.Printf("API Key: %s\n", masked)
@@ -280,6 +292,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("API Key: not set")
 	}
 	fmt.Printf("Telegram: enabled=%v\n", cfg.Channels.Telegram.Enabled)
+	fmt.Printf("Feishu: enabled=%v\n", cfg.Channels.Feishu.Enabled)
 
 	if _, err := os.Stat(cfg.Agent.Workspace); err != nil {
 		fmt.Println("Workspace: not found (run 'myclaw onboard')")
@@ -294,6 +307,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func providerDisplay(t string) string {
+	if t == "" {
+		return "anthropic (default)"
+	}
+	return t
 }
 
 func buildSystemPrompt(cfg *config.Config, mem *memory.MemoryStore) string {

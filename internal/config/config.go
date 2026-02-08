@@ -35,12 +35,14 @@ type AgentConfig struct {
 }
 
 type ProviderConfig struct {
+	Type    string `json:"type,omitempty"` // "anthropic" (default) or "openai"
 	APIKey  string `json:"apiKey"`
 	BaseURL string `json:"baseUrl,omitempty"`
 }
 
 type ChannelsConfig struct {
 	Telegram TelegramConfig `json:"telegram"`
+	Feishu   FeishuConfig   `json:"feishu"`
 }
 
 type TelegramConfig struct {
@@ -48,6 +50,16 @@ type TelegramConfig struct {
 	Token     string   `json:"token"`
 	AllowFrom []string `json:"allowFrom"`
 	Proxy     string   `json:"proxy,omitempty"`
+}
+
+type FeishuConfig struct {
+	Enabled           bool     `json:"enabled"`
+	AppID             string   `json:"appId"`
+	AppSecret         string   `json:"appSecret"`
+	VerificationToken string   `json:"verificationToken"`
+	EncryptKey        string   `json:"encryptKey,omitempty"`
+	Port              int      `json:"port,omitempty"`
+	AllowFrom         []string `json:"allowFrom"`
 }
 
 type ToolsConfig struct {
@@ -117,6 +129,12 @@ func LoadConfig() (*Config, error) {
 	if key := os.Getenv("ANTHROPIC_AUTH_TOKEN"); key != "" && cfg.Provider.APIKey == "" {
 		cfg.Provider.APIKey = key
 	}
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" && cfg.Provider.APIKey == "" {
+		cfg.Provider.APIKey = key
+		if cfg.Provider.Type == "" {
+			cfg.Provider.Type = "openai"
+		}
+	}
 	if url := os.Getenv("MYCLAW_BASE_URL"); url != "" {
 		cfg.Provider.BaseURL = url
 	}
@@ -125,6 +143,12 @@ func LoadConfig() (*Config, error) {
 	}
 	if token := os.Getenv("MYCLAW_TELEGRAM_TOKEN"); token != "" {
 		cfg.Channels.Telegram.Token = token
+	}
+	if appID := os.Getenv("MYCLAW_FEISHU_APP_ID"); appID != "" {
+		cfg.Channels.Feishu.AppID = appID
+	}
+	if appSecret := os.Getenv("MYCLAW_FEISHU_APP_SECRET"); appSecret != "" {
+		cfg.Channels.Feishu.AppSecret = appSecret
 	}
 
 	if cfg.Agent.Workspace == "" {

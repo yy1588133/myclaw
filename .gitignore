@@ -36,3 +36,18 @@ config.json
 # Workspace data (user-specific)
 workspace/memory/*.md
 workspace/HEARTBEAT.md
+
+# Local runtime secrets and state
+.env
+.env.*
+!.env.example
+.myclaw/
+bin/
+
+# Private key materials
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa

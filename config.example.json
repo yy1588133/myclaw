@@ -7,6 +7,7 @@
     "maxToolIterations": 20
   },
   "provider": {
+    "type": "anthropic",
     "apiKey": "sk-ant-...",
     "baseUrl": ""
   },
@@ -16,6 +17,15 @@
       "token": "",
       "allowFrom": [],
       "proxy": ""
+    },
+    "feishu": {
+      "enabled": false,
+      "appId": "",
+      "appSecret": "",
+      "verificationToken": "",
+      "encryptKey": "",
+      "port": 9876,
+      "allowFrom": []
     }
   },
   "tools": {

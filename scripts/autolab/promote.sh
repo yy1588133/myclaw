@@ -6,6 +6,9 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+ORIGIN_URL="$(git remote get-url origin)"
+REPO="${GITHUB_REPO:-$(printf '%s' "$ORIGIN_URL" | sed -E 's#^git@github.com:##; s#^https://github.com/##; s#\.git$##')}"
+
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
   BRANCH="$(git branch --show-current)"
@@ -16,6 +19,6 @@ if [[ -z "$TARGET" ]]; then
   TARGET="$BRANCH"
 fi
 
-gh pr merge "$TARGET" --squash --delete-branch
+gh pr merge "$TARGET" --repo "$REPO" --squash --delete-branch
 
 echo "promote=merged"

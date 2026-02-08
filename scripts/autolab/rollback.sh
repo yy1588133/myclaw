@@ -6,6 +6,9 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+ORIGIN_URL="$(git remote get-url origin)"
+REPO="${GITHUB_REPO:-$(printf '%s' "$ORIGIN_URL" | sed -E 's#^git@github.com:##; s#^https://github.com/##; s#\.git$##')}"
+
 if [[ $# -eq 0 ]]; then
   echo "Select a rollback target and run:"
   echo "  scripts/autolab/rollback.sh <target-ref>"
@@ -31,7 +34,7 @@ git merge --no-ff "$TARGET" -m "rollback: promote ${TARGET}"
 
 git push -u origin "$RB_BRANCH"
 
-PR_URL="$(gh pr create --base main --head "$RB_BRANCH" --title "rollback: ${TARGET}" --body "## Rollback target
+PR_URL="$(gh pr create --repo "$REPO" --base main --head "$RB_BRANCH" --title "rollback: ${TARGET}" --body "## Rollback target
 - ${TARGET}
 
 ## Notes

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  if [[ "$REMOTE_REF" == "refs/heads/main" ]]; then
+    echo "Blocked: pushing directly to main is not allowed. Open a PR." >&2
+    exit 1
+  fi
+done
+
+if [[ "${SKIP_VERIFY:-0}" != "1" ]]; then
+  if [[ -x scripts/autolab/verify.sh ]]; then
+    scripts/autolab/verify.sh
+  fi
+fi

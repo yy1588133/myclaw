@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BRANCH="$(git branch --show-current)"
+if [[ "$BRANCH" == "main" ]]; then
+  echo "Blocked: commits on main are not allowed. Use autolab/* branch." >&2
+  exit 1
+fi

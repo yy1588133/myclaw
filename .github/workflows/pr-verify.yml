@@ -1,0 +1,95 @@
+name: pr-verify
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check gofmt on changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          mapfile -t GO_FILES < <(git diff --name-only --diff-filter=ACMRT "origin/${{ github.base_ref }}"...HEAD -- '*.go')
+          if [[ ${#GO_FILES[@]} -eq 0 ]]; then
+            echo "No changed Go files."
+            exit 0
+          fi
+          UNFORMATTED="$(gofmt -l "${GO_FILES[@]}")"
+          if [[ -n "$UNFORMATTED" ]]; then
+            echo "These changed files are not gofmt-formatted:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+      - name: Run go vet
+        run: go vet ./...
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run unit and integration tests
+        run: go test ./... -count=1
+
+  race:
+    name: race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run race tests
+        run: go test -race ./... -count=1
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build all packages
+        run: go build ./...
+
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build myclaw binary
+        run: go build -o ./myclaw-ci ./cmd/myclaw
+      - name: Smoke check onboarding and status
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP_HOME="$(mktemp -d)"
+          HOME="$TMP_HOME" ./myclaw-ci onboard
+          HOME="$TMP_HOME" ./myclaw-ci status

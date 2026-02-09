@@ -30,10 +30,6 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_REPO_PATH: ${{ secrets.DEPLOY_REPO_PATH }}
-          DEPLOY_SERVICE: ${{ secrets.DEPLOY_SERVICE }}
         run: |
           set -euo pipefail
-          REPO_PATH="${DEPLOY_REPO_PATH:-/home/maoyu/apps/myclaw}"
-          SERVICE_NAME="${DEPLOY_SERVICE:-myclaw}"
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "set -e; cd ${REPO_PATH}; git fetch origin; git pull --ff-only origin main; /usr/local/go/bin/go build -o ${REPO_PATH}/bin/myclaw ./cmd/myclaw; sudo systemctl restart ${SERVICE_NAME}; sudo systemctl is-active ${SERVICE_NAME}"
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "sudo -n /usr/local/bin/myclaw-deploy-run"

@@ -117,12 +117,13 @@ Completed:
 - [x] deploy-main migrated to self-hosted runner (label: myclaw-host) and verified successful.
 - [x] Least-privilege deploy model enabled: myclaw-deploy user plus /usr/local/bin/myclaw-deploy-run wrapper.
 - [x] Legacy DEPLOY_* secrets removed from repository (currently no deploy secrets required).
+- [x] Rollback workflow_dispatch drill executed with non-main target (08c59ce), rollback branch created automatically.
+- [x] Rollback drill PR established and validated (PR #9, checks green, kept unmerged).
 
 In progress:
-- [ ] Rollback workflow drill with a non-main target to generate a real rollback PR.
-- [ ] Validate rollback PR end-to-end (creation, checks, approval gate, optional merge).
+- [ ] None.
 
 Next execution order:
-1. Trigger rollback workflow_dispatch with a safe non-main target (for example a previous main commit or tag).
-2. Confirm rollback PR is generated with correct target metadata and diff.
-3. Keep rollback PR unmerged as emergency baseline unless explicit user approval is given.
+1. Keep rollback PR #9 unmerged as emergency baseline.
+2. Merge rollback PR only when explicit user approval is given.
+3. Record future rollback drills in this section after each major release milestone.

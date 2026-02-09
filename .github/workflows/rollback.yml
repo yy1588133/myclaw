@@ -81,3 +81,10 @@ jobs:
             --title "rollback: ${TARGET_REF}" \
             --body "${BODY}" \
             --repo "${{ github.repository }}"
+
+      - name: Trigger required checks for rollback PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run pr-verify --repo "${{ github.repository }}" --ref "${RB_BRANCH}"
+          gh workflow run secret-audit --repo "${{ github.repository }}" --ref "${RB_BRANCH}"

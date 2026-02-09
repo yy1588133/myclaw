@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   deploy:
-    if: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_USER != '' && secrets.DEPLOY_SSH_KEY != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Setup SSH key
@@ -22,6 +21,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "${{ secrets.DEPLOY_HOST }}" || -z "${{ secrets.DEPLOY_USER }}" || -z "${{ secrets.DEPLOY_SSH_KEY }}" ]]; then
+            echo "Missing DEPLOY_* secrets" >&2
+            exit 1
+          fi
           mkdir -p ~/.ssh
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
 

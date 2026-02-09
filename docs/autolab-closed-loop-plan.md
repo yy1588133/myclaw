@@ -107,20 +107,22 @@ If scope changes to multi-user or team mode later, approver identity mapping to 
 - Required checks currently enforced: lint, test, race, build, smoke, secret-audit.
 - Required GitHub review count is set to 0 for single-user mode to avoid self-approval deadlock.
 
-## 13) Implementation Progress (Updated 2026-02-08)
+## 13) Implementation Progress (Updated 2026-02-09)
 Completed:
-- [x] Branch-first workflow scripts implemented: start/verify/submit/promote/rollback.
-- [x] Strict CI workflows implemented: pr-verify and secret-audit.
-- [x] Server-side branch protection enabled on main with strict status checks.
-- [x] Repository merge policy enforced as squash-only.
-- [x] First closed-loop change set merged via PR and deployed successfully.
-- [x] Local prepull backup file cleaned from production working tree.
+- [x] Branch-first workflow scripts implemented and enforced in daily use.
+- [x] Strict CI workflows active: pr-verify and secret-audit.
+- [x] Main branch protection enabled with required checks (lint/test/race/build/smoke/secret-audit).
+- [x] Merge policy enforced as squash-only.
+- [x] Multiple autolab PRs merged and deployed without service interruption.
+- [x] deploy-main migrated to self-hosted runner (label: myclaw-host) and verified successful.
+- [x] Least-privilege deploy model enabled: myclaw-deploy user plus /usr/local/bin/myclaw-deploy-run wrapper.
+- [x] Legacy DEPLOY_* secrets removed from repository (currently no deploy secrets required).
 
 In progress:
-- [ ] Configure deploy-main workflow secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
-- [ ] Run rollback workflow drill via workflow_dispatch and verify generated rollback PR.
+- [ ] Rollback workflow drill with a non-main target to generate a real rollback PR.
+- [ ] Validate rollback PR end-to-end (creation, checks, approval gate, optional merge).
 
 Next execution order:
-1. Configure deploy-main secrets and trigger a dry-run deployment workflow.
-2. Trigger rollback workflow with a safe target branch and inspect generated PR.
-3. Merge rollback PR only when explicitly approved by user.
+1. Trigger rollback workflow_dispatch with a safe non-main target (for example a previous main commit or tag).
+2. Confirm rollback PR is generated with correct target metadata and diff.
+3. Keep rollback PR unmerged as emergency baseline unless explicit user approval is given.

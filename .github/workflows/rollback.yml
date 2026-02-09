@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      TARGET_REF: ${{ inputs.target_ref }}
+      TARGET_REF: ${{ github.event.inputs.target_ref }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -101,7 +101,26 @@ The closed-loop is active only when all are true:
 This plan assumes personal single-user usage even across multiple IM channels.
 If scope changes to multi-user or team mode later, approver identity mapping to GitHub users must be added before keeping auto deploy enabled.
 
-## 12) GitHub Plan Constraint
-- Private repositories on GitHub Free cannot enable branch protection/rulesets APIs.
-- Fallback enforcement in this implementation: local git hooks (.githooks pre-commit/pre-push) plus required PR CI checks.
-- To enable server-side branch protection, upgrade to GitHub Pro or make the repository public.
+## 12) GitHub Plan Constraint (Resolved)
+- Repository visibility has been changed to public.
+- Server-side branch protection is now enabled on main.
+- Required checks currently enforced: lint, test, race, build, smoke, secret-audit.
+- Required GitHub review count is set to 0 for single-user mode to avoid self-approval deadlock.
+
+## 13) Implementation Progress (Updated 2026-02-08)
+Completed:
+- [x] Branch-first workflow scripts implemented: start/verify/submit/promote/rollback.
+- [x] Strict CI workflows implemented: pr-verify and secret-audit.
+- [x] Server-side branch protection enabled on main with strict status checks.
+- [x] Repository merge policy enforced as squash-only.
+- [x] First closed-loop change set merged via PR and deployed successfully.
+- [x] Local prepull backup file cleaned from production working tree.
+
+In progress:
+- [ ] Configure deploy-main workflow secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
+- [ ] Run rollback workflow drill via workflow_dispatch and verify generated rollback PR.
+
+Next execution order:
+1. Configure deploy-main secrets and trigger a dry-run deployment workflow.
+2. Trigger rollback workflow with a safe target branch and inspect generated PR.
+3. Merge rollback PR only when explicitly approved by user.

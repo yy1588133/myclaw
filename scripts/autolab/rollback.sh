@@ -22,23 +22,41 @@ if [[ $# -eq 0 ]]; then
   exit 0
 fi
 
-TARGET="$1"
+TARGET_INPUT="$1"
+git fetch origin --tags
+
+if git rev-parse --verify -q "origin/${TARGET_INPUT}" >/dev/null; then
+  TARGET_REF="origin/${TARGET_INPUT}"
+elif git rev-parse --verify -q "${TARGET_INPUT}" >/dev/null; then
+  TARGET_REF="${TARGET_INPUT}"
+else
+  echo "Error: target ref not found: ${TARGET_INPUT}" >&2
+  exit 1
+fi
+
+TARGET_SHA="$(git rev-parse "${TARGET_REF}")"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RB_BRANCH="autolab/rollback-${STAMP}"
 
-git fetch origin
+git switch -c "${RB_BRANCH}" origin/main
+git restore --source "${TARGET_SHA}" -- .
 
-git switch -c "$RB_BRANCH" origin/main
+if git diff --quiet --exit-code; then
+  echo "Error: no file diff between origin/main and ${TARGET_REF}. Nothing to rollback." >&2
+  exit 1
+fi
 
-git merge --no-ff "$TARGET" -m "rollback: promote ${TARGET}"
+git add -A
+git commit -m "rollback: align tree to ${TARGET_INPUT} (${TARGET_SHA:0:12})"
+git push -u origin "${RB_BRANCH}"
 
-git push -u origin "$RB_BRANCH"
-
-PR_URL="$(gh pr create --repo "$REPO" --base main --head "$RB_BRANCH" --title "rollback: ${TARGET}" --body "## Rollback target
-- ${TARGET}
+PR_URL="$(gh pr create --repo "${REPO}" --base main --head "${RB_BRANCH}" --title "rollback: ${TARGET_INPUT}" --body "## Rollback target
+- input: ${TARGET_INPUT}
+- resolved: ${TARGET_REF}
+- commit: ${TARGET_SHA}
 
 ## Notes
-- This rollback PR was generated from user-selected target.
+- This rollback PR aligns the repository tree to the selected target.
 - Merge strategy remains squash.")"
 
-echo "$PR_URL"
+echo "${PR_URL}"

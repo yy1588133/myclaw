@@ -21,4 +21,9 @@ fi
 
 gh pr merge "$TARGET" --repo "$REPO" --squash --delete-branch
 
-echo "promote=merged"
+if [[ "${AUTO_DEPLOY:-1}" == "1" ]]; then
+  "$(dirname "$0")/deploy-main.sh"
+  echo "promote=merged_and_deployed"
+else
+  echo "promote=merged"
+fi

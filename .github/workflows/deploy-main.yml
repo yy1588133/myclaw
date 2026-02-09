@@ -1,0 +1,38 @@
+name: deploy-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add known host
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ secrets.DEPLOY_HOST }}" || -z "${{ secrets.DEPLOY_USER }}" || -z "${{ secrets.DEPLOY_SSH_KEY }}" ]]; then
+            echo "Missing DEPLOY_* secrets" >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on remote host
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "sudo -n /usr/local/bin/myclaw-deploy-run"

@@ -76,6 +76,28 @@ func NewChannelManager(cfg config.ChannelsConfig, b *bus.MessageBus) (*ChannelMa
 	return m, nil
 }
 
+func NewChannelManagerWithGateway(cfg config.ChannelsConfig, gwCfg config.GatewayConfig, b *bus.MessageBus) (*ChannelManager, error) {
+	m, err := NewChannelManager(cfg, b)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.WebUI.Enabled {
+		ch, err := NewWebUIChannel(cfg.WebUI, gwCfg, b)
+		if err != nil {
+			return nil, fmt.Errorf("init webui channel: %w", err)
+		}
+		m.channels[ch.Name()] = ch
+		b.SubscribeOutbound(ch.Name(), func(msg bus.OutboundMessage) {
+			if err := ch.Send(msg); err != nil {
+				log.Printf("[channel-mgr] send to %s failed: %v", ch.Name(), err)
+			}
+		})
+	}
+
+	return m, nil
+}
+
 func (m *ChannelManager) StartAll(ctx context.Context) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(m.channels))

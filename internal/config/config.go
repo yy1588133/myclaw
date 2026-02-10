@@ -50,6 +50,7 @@ type ChannelsConfig struct {
 	Feishu   FeishuConfig   `json:"feishu"`
 	WeCom    WeComConfig    `json:"wecom"`
 	WhatsApp WhatsAppConfig `json:"whatsapp"`
+	WebUI    WebUIConfig    `json:"webui"`
 }
 
 type TelegramConfig struct {
@@ -114,6 +115,11 @@ type WhatsAppConfig struct {
 	Enabled   bool     `json:"enabled"`
 	JID       string   `json:"jid,omitempty"`
 	StorePath string   `json:"storePath,omitempty"`
+	AllowFrom []string `json:"allowFrom,omitempty"`
+}
+
+type WebUIConfig struct {
+	Enabled   bool     `json:"enabled"`
 	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 

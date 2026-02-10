@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/cexll/agentsdk-go v0.9.1
+	github.com/coder/websocket v1.8.14
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/robfig/cron/v3 v3.0.1
@@ -20,7 +21,6 @@ require (
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect

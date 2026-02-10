@@ -180,8 +180,8 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	// Heartbeat
 	g.hb = heartbeat.New(cfg.Agent.Workspace, runAgent, 0)
 
-	// Channels
-	chMgr, err := channel.NewChannelManager(cfg.Channels, g.bus)
+	// Channels (with gateway config for WebUI port)
+	chMgr, err := channel.NewChannelManagerWithGateway(cfg.Channels, cfg.Gateway, g.bus)
 	if err != nil {
 		return nil, fmt.Errorf("create channel manager: %w", err)
 	}

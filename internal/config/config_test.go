@@ -33,6 +33,18 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Tools.RestrictToWorkspace {
 		t.Error("restrictToWorkspace should be true by default")
 	}
+	if !cfg.Skills.Enabled {
+		t.Error("skills.enabled should be true by default")
+	}
+	if !cfg.AutoCompact.Enabled {
+		t.Error("autoCompact.enabled should be true by default")
+	}
+	if cfg.AutoCompact.Threshold != 0.8 {
+		t.Errorf("autoCompact.threshold = %v, want 0.8", cfg.AutoCompact.Threshold)
+	}
+	if cfg.AutoCompact.PreserveCount != 5 {
+		t.Errorf("autoCompact.preserveCount = %d, want 5", cfg.AutoCompact.PreserveCount)
+	}
 	if cfg.Agent.Workspace == "" {
 		t.Error("workspace should not be empty")
 	}

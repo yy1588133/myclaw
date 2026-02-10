@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/config"
 )
@@ -33,6 +34,8 @@ const (
 	wecomDefaultMsgCacheScan  = 1 * time.Minute
 	wecomDefaultReplyCacheTTL = 1 * time.Hour
 	wecomMarkdownMaxBytes     = 20480
+	wecomInboundImageMaxBytes = 10 << 20 // 10MB
+	wecomInboundImageTimeout  = 10 * time.Second
 	wecomSendMaxRetries       = 3
 )
 
@@ -480,6 +483,22 @@ type weComVoice struct {
 	Content string `json:"content"`
 }
 
+type weComImage struct {
+	URL      string `json:"url"`
+	PicURL   string `json:"pic_url"`
+	ImageURL string `json:"image_url"`
+	MediaID  string `json:"media_id"`
+}
+
+func (i weComImage) URLValue() string {
+	for _, candidate := range []string{i.URL, i.PicURL, i.ImageURL} {
+		if v := strings.TrimSpace(candidate); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 type weComInboundMessage struct {
 	MsgID       string     `json:"msgid"`
 	AIBotID     string     `json:"aibotid"`
@@ -492,6 +511,7 @@ type weComInboundMessage struct {
 	Text        weComText  `json:"text"`
 	Mixed       weComMixed `json:"mixed"`
 	Voice       weComVoice `json:"voice"`
+	Image       weComImage `json:"image"`
 }
 
 type weComReplyEnvelope struct {
@@ -654,23 +674,27 @@ func (w *WeComChannel) processDecryptedMessage(plaintext string) {
 	}
 
 	content := extractWeComContent(message)
-	if content == "" {
+	contentBlocks := w.extractWeComContentBlocks(message)
+	if content == "" && len(contentBlocks) == 0 {
 		return
 	}
 
 	w.bus.Inbound <- bus.InboundMessage{
-		Channel:   wecomChannelName,
-		SenderID:  senderID,
-		ChatID:    chatID,
-		Content:   content,
-		Timestamp: time.Now(),
+		Channel:       wecomChannelName,
+		SenderID:      senderID,
+		ChatID:        chatID,
+		Content:       content,
+		Timestamp:     time.Now(),
+		ContentBlocks: contentBlocks,
 		Metadata: map[string]any{
-			"msg_id":       messageID,
-			"aibot_id":     strings.TrimSpace(message.AIBotID),
-			"chat_id":      strings.TrimSpace(message.ChatID),
-			"chat_type":    strings.TrimSpace(message.ChatType),
-			"msg_type":     strings.TrimSpace(message.MsgType),
-			"response_url": responseURL,
+			"msg_id":         messageID,
+			"aibot_id":       strings.TrimSpace(message.AIBotID),
+			"chat_id":        strings.TrimSpace(message.ChatID),
+			"chat_type":      strings.TrimSpace(message.ChatType),
+			"msg_type":       strings.TrimSpace(message.MsgType),
+			"image_url":      message.Image.URLValue(),
+			"image_media_id": strings.TrimSpace(message.Image.MediaID),
+			"response_url":   responseURL,
 		},
 	}
 }
@@ -692,12 +716,100 @@ func (w *WeComChannel) resolveChatID(message weComInboundMessage, senderID strin
 	return senderID
 }
 
+func (w *WeComChannel) extractWeComContentBlocks(message weComInboundMessage) []model.ContentBlock {
+	if !strings.EqualFold(strings.TrimSpace(message.MsgType), "image") {
+		return nil
+	}
+
+	block, err := w.buildWeComImageContentBlock(context.Background(), message)
+	if err != nil {
+		log.Printf("[wecom] process image message warning: %v", err)
+	}
+	if block == nil {
+		return nil
+	}
+
+	return []model.ContentBlock{*block}
+}
+
+func (w *WeComChannel) buildWeComImageContentBlock(ctx context.Context, message weComInboundMessage) (*model.ContentBlock, error) {
+	imageURL := message.Image.URLValue()
+	if imageURL == "" {
+		mediaID := strings.TrimSpace(message.Image.MediaID)
+		if mediaID != "" {
+			// TODO: 支持通过企业微信 access_token + media_id 下载图片内容。
+			return nil, fmt.Errorf("wecom image media_id %q requires access_token download", mediaID)
+		}
+		return nil, fmt.Errorf("wecom image payload missing url")
+	}
+
+	base64Data, mediaType, err := downloadWeComImageAsBase64(ctx, imageURL)
+	if err != nil {
+		return &model.ContentBlock{
+			Type: model.ContentBlockImage,
+			URL:  imageURL,
+		}, fmt.Errorf("download wecom image from %q: %w", imageURL, err)
+	}
+
+	return &model.ContentBlock{
+		Type:      model.ContentBlockImage,
+		MediaType: mediaType,
+		Data:      base64Data,
+	}, nil
+}
+
+func downloadWeComImageAsBase64(ctx context.Context, imageURL string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create image request: %w", err)
+	}
+
+	httpClient := &http.Client{Timeout: wecomInboundImageTimeout}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("request image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, wecomInboundImageMaxBytes+1))
+	if err != nil {
+		return "", "", fmt.Errorf("read image response: %w", err)
+	}
+	if int64(len(body)) > wecomInboundImageMaxBytes {
+		return "", "", fmt.Errorf("image exceeds %d bytes", wecomInboundImageMaxBytes)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("image request failed with status %d", resp.StatusCode)
+	}
+
+	mediaType := normalizeWeComMediaType(resp.Header.Get("Content-Type"))
+	if mediaType == "" {
+		mediaType = http.DetectContentType(body)
+	}
+
+	return base64.StdEncoding.EncodeToString(body), mediaType, nil
+}
+
+func normalizeWeComMediaType(value string) string {
+	contentType := strings.TrimSpace(value)
+	if contentType == "" {
+		return ""
+	}
+	if idx := strings.Index(contentType, ";"); idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.TrimSpace(contentType)
+}
+
 func extractWeComContent(message weComInboundMessage) string {
 	switch strings.ToLower(strings.TrimSpace(message.MsgType)) {
 	case "text":
 		return strings.TrimSpace(message.Text.Content)
 	case "voice":
 		return strings.TrimSpace(message.Voice.Content)
+	case "image":
+		return "[image]"
 	case "mixed":
 		parts := make([]string, 0, len(message.Mixed.MsgItem))
 		for _, item := range message.Mixed.MsgItem {

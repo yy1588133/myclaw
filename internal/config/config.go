@@ -19,11 +19,16 @@ const (
 )
 
 type Config struct {
-	Agent    AgentConfig    `json:"agent"`
-	Channels ChannelsConfig `json:"channels"`
-	Provider ProviderConfig `json:"provider"`
-	Tools    ToolsConfig    `json:"tools"`
-	Gateway  GatewayConfig  `json:"gateway"`
+	Agent         AgentConfig         `json:"agent"`
+	Channels      ChannelsConfig      `json:"channels"`
+	Provider      ProviderConfig      `json:"provider"`
+	Tools         ToolsConfig         `json:"tools"`
+	Skills        SkillsConfig        `json:"skills"`
+	Hooks         HooksConfig         `json:"hooks"`
+	MCP           MCPConfig           `json:"mcp"`
+	AutoCompact   AutoCompactConfig   `json:"autoCompact"`
+	TokenTracking TokenTrackingConfig `json:"tokenTracking"`
+	Gateway       GatewayConfig       `json:"gateway"`
 }
 
 type AgentConfig struct {
@@ -44,6 +49,7 @@ type ChannelsConfig struct {
 	Telegram TelegramConfig `json:"telegram"`
 	Feishu   FeishuConfig   `json:"feishu"`
 	WeCom    WeComConfig    `json:"wecom"`
+	WhatsApp WhatsAppConfig `json:"whatsapp"`
 }
 
 type TelegramConfig struct {
@@ -83,6 +89,44 @@ type GatewayConfig struct {
 	Port int    `json:"port"`
 }
 
+type SkillsConfig struct {
+	Enabled bool   `json:"enabled"`
+	Dir     string `json:"dir,omitempty"` // 默认 workspace/skills
+}
+
+type HooksConfig struct {
+	PreToolUse  []HookEntry `json:"preToolUse,omitempty"`
+	PostToolUse []HookEntry `json:"postToolUse,omitempty"`
+	Stop        []HookEntry `json:"stop,omitempty"`
+}
+
+type HookEntry struct {
+	Command string `json:"command"`
+	Pattern string `json:"pattern,omitempty"` // tool name regex
+	Timeout int    `json:"timeout,omitempty"` // seconds
+}
+
+type MCPConfig struct {
+	Servers []string `json:"servers,omitempty"`
+}
+
+type WhatsAppConfig struct {
+	Enabled   bool     `json:"enabled"`
+	JID       string   `json:"jid,omitempty"`
+	StorePath string   `json:"storePath,omitempty"`
+	AllowFrom []string `json:"allowFrom,omitempty"`
+}
+
+type AutoCompactConfig struct {
+	Enabled       bool    `json:"enabled"`
+	Threshold     float64 `json:"threshold,omitempty"`
+	PreserveCount int     `json:"preserveCount,omitempty"`
+}
+
+type TokenTrackingConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
@@ -98,6 +142,14 @@ func DefaultConfig() *Config {
 		Tools: ToolsConfig{
 			ExecTimeout:         DefaultExecTimeout,
 			RestrictToWorkspace: true,
+		},
+		Skills: SkillsConfig{
+			Enabled: true,
+		},
+		AutoCompact: AutoCompactConfig{
+			Enabled:       true,
+			Threshold:     0.8,
+			PreserveCount: 5,
 		},
 		Gateway: GatewayConfig{
 			Host: DefaultHost,

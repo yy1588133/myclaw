@@ -2,12 +2,14 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/cexll/agentsdk-go/pkg/api"
+	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/channel"
 	"github.com/stellarlinkco/myclaw/internal/config"
@@ -21,9 +23,16 @@ type mockRuntime struct {
 	response *api.Response
 	err      error
 	closed   bool
+	reqCh    chan api.Request
 }
 
 func (m *mockRuntime) Run(ctx context.Context, req api.Request) (*api.Response, error) {
+	if m.reqCh != nil {
+		select {
+		case m.reqCh <- req:
+		default:
+		}
+	}
 	return m.response, m.err
 }
 
@@ -183,7 +192,7 @@ func TestGateway_RunAgent(t *testing.T) {
 		runtime: mockRt,
 	}
 
-	result, err := g.runAgent(context.Background(), "test", "session1")
+	result, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != nil {
 		t.Errorf("runAgent error: %v", err)
 	}
@@ -197,7 +206,7 @@ func TestGateway_RunAgent_NilResponse(t *testing.T) {
 
 	g := &Gateway{runtime: mockRt}
 
-	result, err := g.runAgent(context.Background(), "test", "session1")
+	result, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != nil {
 		t.Errorf("runAgent error: %v", err)
 	}
@@ -211,7 +220,7 @@ func TestGateway_RunAgent_NilResult(t *testing.T) {
 
 	g := &Gateway{runtime: mockRt}
 
-	result, err := g.runAgent(context.Background(), "test", "session1")
+	result, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != nil {
 		t.Errorf("runAgent error: %v", err)
 	}
@@ -271,14 +280,114 @@ func TestGateway_ProcessLoop(t *testing.T) {
 	cancel()
 }
 
+func TestGateway_ProcessLoop_WithContentBlocks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			Workspace: tmpDir,
+		},
+	}
+
+	msgBus := bus.NewMessageBus(10)
+	blocks := []model.ContentBlock{
+		{
+			Type: model.ContentBlockText,
+			Text: "caption text",
+		},
+		{
+			Type:      model.ContentBlockImage,
+			MediaType: "image/jpeg",
+			Data:      base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xd9}),
+		},
+	}
+	reqCh := make(chan api.Request, 1)
+	mockRt := &mockRuntime{
+		reqCh: reqCh,
+		response: &api.Response{
+			Result: &api.Result{Output: "multimodal response"},
+		},
+	}
+
+	g := &Gateway{
+		cfg:     cfg,
+		bus:     msgBus,
+		runtime: mockRt,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go g.processLoop(ctx)
+
+	msgBus.Inbound <- bus.InboundMessage{
+		Channel:       "telegram",
+		SenderID:      "123",
+		ChatID:        "456",
+		Content:       "caption text",
+		ContentBlocks: blocks,
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.Prompt != "caption text" {
+			t.Errorf("runtime prompt = %q, want caption text", req.Prompt)
+		}
+		if req.SessionID != "telegram:456" {
+			t.Errorf("runtime sessionID = %q, want telegram:456", req.SessionID)
+		}
+		if len(req.ContentBlocks) != len(blocks) {
+			t.Fatalf("runtime content blocks len = %d, want %d", len(req.ContentBlocks), len(blocks))
+		}
+		for i := range blocks {
+			if req.ContentBlocks[i] != blocks[i] {
+				t.Fatalf("runtime content block[%d] = %+v, want %+v", i, req.ContentBlocks[i], blocks[i])
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for runtime request")
+	}
+
+	select {
+	case outMsg := <-msgBus.Outbound:
+		if outMsg.Channel != "telegram" {
+			t.Errorf("outbound channel = %q, want telegram", outMsg.Channel)
+		}
+		if outMsg.ChatID != "456" {
+			t.Errorf("outbound chatID = %q, want 456", outMsg.ChatID)
+		}
+		if outMsg.Content != "multimodal response" {
+			t.Errorf("outbound content = %q, want multimodal response", outMsg.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for outbound response")
+	}
+}
+
 func TestGateway_RunAgent_Error(t *testing.T) {
 	mockRt := &mockRuntime{err: context.DeadlineExceeded}
 
 	g := &Gateway{runtime: mockRt}
 
-	_, err := g.runAgent(context.Background(), "test", "session1")
+	_, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestGateway_RunAgent_ContentBlocks(t *testing.T) {
+	blocks := []model.ContentBlock{{Type: model.ContentBlockText, Text: "hello multimodal"}}
+	mockRt := &mockRuntime{
+		response: &api.Response{Result: &api.Result{Output: "ok"}},
+	}
+
+	g := &Gateway{runtime: mockRt}
+	result, err := g.runAgent(context.Background(), "test", "session1", blocks)
+	if err != nil {
+		t.Fatalf("runAgent error: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("result = %q, want ok", result)
 	}
 }
 

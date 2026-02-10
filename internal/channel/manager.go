@@ -60,6 +60,19 @@ func NewChannelManager(cfg config.ChannelsConfig, b *bus.MessageBus) (*ChannelMa
 		})
 	}
 
+	if cfg.WhatsApp.Enabled {
+		ch, err := NewWhatsApp(cfg.WhatsApp, b)
+		if err != nil {
+			return nil, fmt.Errorf("create whatsapp channel: %w", err)
+		}
+		m.channels[ch.Name()] = ch
+		b.SubscribeOutbound(ch.Name(), func(msg bus.OutboundMessage) {
+			if err := ch.Send(msg); err != nil {
+				log.Printf("[channel-mgr] send to %s failed: %v", ch.Name(), err)
+			}
+		})
+	}
+
 	return m, nil
 }
 

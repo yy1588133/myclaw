@@ -72,6 +72,13 @@ func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 		ModelFactory:  provider,
 		SystemPrompt:  sysPrompt,
 		MaxIterations: cfg.Agent.MaxToolIterations,
+		MCPServers:    cfg.MCP.Servers,
+		TokenTracking: cfg.TokenTracking.Enabled,
+		AutoCompact: api.CompactConfig{
+			Enabled:       cfg.AutoCompact.Enabled,
+			Threshold:     cfg.AutoCompact.Threshold,
+			PreserveCount: cfg.AutoCompact.PreserveCount,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create runtime: %w", err)

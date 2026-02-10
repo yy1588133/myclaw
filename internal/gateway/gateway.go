@@ -18,6 +18,7 @@ import (
 	"github.com/stellarlinkco/myclaw/internal/cron"
 	"github.com/stellarlinkco/myclaw/internal/heartbeat"
 	"github.com/stellarlinkco/myclaw/internal/memory"
+	"github.com/stellarlinkco/myclaw/internal/skills"
 )
 
 // Runtime interface for agent runtime (allows mocking in tests)
@@ -50,6 +51,10 @@ type Options struct {
 
 // DefaultRuntimeFactory creates the default agentsdk-go runtime
 func DefaultRuntimeFactory(cfg *config.Config, sysPrompt string) (Runtime, error) {
+	return newRuntime(cfg, sysPrompt, nil)
+}
+
+func newRuntime(cfg *config.Config, sysPrompt string, skillRegs []api.SkillRegistration) (Runtime, error) {
 	var provider api.ModelFactory
 	switch cfg.Provider.Type {
 	case "openai":
@@ -73,6 +78,14 @@ func DefaultRuntimeFactory(cfg *config.Config, sysPrompt string) (Runtime, error
 		ModelFactory:  provider,
 		SystemPrompt:  sysPrompt,
 		MaxIterations: cfg.Agent.MaxToolIterations,
+		MCPServers:    cfg.MCP.Servers,
+		TokenTracking: cfg.TokenTracking.Enabled,
+		AutoCompact: api.CompactConfig{
+			Enabled:       cfg.AutoCompact.Enabled,
+			Threshold:     cfg.AutoCompact.Threshold,
+			PreserveCount: cfg.AutoCompact.PreserveCount,
+		},
+		Skills: skillRegs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create runtime: %w", err)
@@ -88,6 +101,7 @@ type Gateway struct {
 	cron       *cron.Service
 	hb         *heartbeat.Service
 	mem        *memory.MemoryStore
+	skillRegs  []api.SkillRegistration
 	signalChan chan os.Signal // for testing
 }
 
@@ -109,12 +123,29 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	// Build system prompt
 	sysPrompt := g.buildSystemPrompt()
 
+	if cfg.Skills.Enabled {
+		skillDir := cfg.Skills.Dir
+		if skillDir == "" {
+			skillDir = filepath.Join(cfg.Agent.Workspace, "skills")
+		}
+		skillRegs, err := skills.LoadSkills(skillDir)
+		if err != nil {
+			log.Printf("[gateway] skills load warning: %v", err)
+		}
+		g.skillRegs = skillRegs
+	}
+
 	// Create runtime using factory (allows injection for testing)
 	factory := opts.RuntimeFactory
+	var (
+		rt  Runtime
+		err error
+	)
 	if factory == nil {
-		factory = DefaultRuntimeFactory
+		rt, err = newRuntime(cfg, sysPrompt, g.skillRegs)
+	} else {
+		rt, err = factory(cfg, sysPrompt)
 	}
-	rt, err := factory(cfg, sysPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +156,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 
 	// runAgent helper for cron/heartbeat
 	runAgent := func(prompt string) (string, error) {
-		return g.runAgent(context.Background(), prompt, "system")
+		return g.runAgent(context.Background(), prompt, "system", nil)
 	}
 
 	// Cron
@@ -179,10 +210,11 @@ func (g *Gateway) buildSystemPrompt() string {
 	return sb.String()
 }
 
-func (g *Gateway) runAgent(ctx context.Context, prompt, sessionID string) (string, error) {
+func (g *Gateway) runAgent(ctx context.Context, prompt, sessionID string, contentBlocks []model.ContentBlock) (string, error) {
 	resp, err := g.runtime.Run(ctx, api.Request{
-		Prompt:    prompt,
-		SessionID: sessionID,
+		Prompt:        prompt,
+		ContentBlocks: contentBlocks,
+		SessionID:     sessionID,
 	})
 	if err != nil {
 		return "", err
@@ -236,7 +268,7 @@ func (g *Gateway) processLoop(ctx context.Context) {
 		case msg := <-g.bus.Inbound:
 			log.Printf("[gateway] inbound from %s/%s: %s", msg.Channel, msg.SenderID, truncate(msg.Content, 80))
 
-			result, err := g.runAgent(ctx, msg.Content, msg.SessionKey())
+			result, err := g.runAgent(ctx, msg.Content, msg.SessionKey(), msg.ContentBlocks)
 			if err != nil {
 				log.Printf("[gateway] agent error: %v", err)
 				result = "Sorry, I encountered an error processing your message."

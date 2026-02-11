@@ -129,6 +129,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: myclaw-*
           path: dist
           merge-multiple: true
 

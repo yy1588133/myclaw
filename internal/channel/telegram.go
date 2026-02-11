@@ -2,7 +2,9 @@ package channel
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -10,9 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cexll/agentsdk-go/pkg/model"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/config"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 const telegramChannelName = "telegram"
@@ -23,6 +26,7 @@ type TelegramBot interface {
 	StopReceivingUpdates()
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
 	GetSelf() tgbotapi.User
+	GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error)
 }
 
 // tgBotWrapper wraps tgbotapi.BotAPI to implement TelegramBot interface
@@ -46,6 +50,10 @@ func (w *tgBotWrapper) GetSelf() tgbotapi.User {
 	return w.bot.Self
 }
 
+func (w *tgBotWrapper) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error) {
+	return w.bot.GetFile(config)
+}
+
 // BotFactory creates TelegramBot instances (allows mocking)
 type BotFactory func(token, apiEndpoint string, client *http.Client) (TelegramBot, error)
 
@@ -63,6 +71,7 @@ type TelegramChannel struct {
 	token      string
 	bot        TelegramBot
 	proxy      string
+	httpClient *http.Client
 	cancel     context.CancelFunc
 	botFactory BotFactory
 }
@@ -81,6 +90,7 @@ func NewTelegramChannelWithFactory(cfg config.TelegramConfig, b *bus.MessageBus,
 		BaseChannel: NewBaseChannel(telegramChannelName, b, cfg.AllowFrom),
 		token:       cfg.Token,
 		proxy:       cfg.Proxy,
+		httpClient:  http.DefaultClient,
 		botFactory:  factory,
 	}
 	return ch, nil
@@ -99,6 +109,7 @@ func (t *TelegramChannel) initBot() error {
 	} else {
 		client = http.DefaultClient
 	}
+	t.httpClient = client
 
 	bot, err := t.botFactory(t.token, tgbotapi.APIEndpoint, client)
 	if err != nil {
@@ -150,24 +161,108 @@ func (t *TelegramChannel) handleMessage(msg *tgbotapi.Message) {
 	if content == "" && msg.Caption != "" {
 		content = msg.Caption
 	}
-	if content == "" {
+
+	contentBlocks := make([]model.ContentBlock, 0, 2)
+
+	if len(msg.Photo) > 0 {
+		photo := msg.Photo[len(msg.Photo)-1]
+		data, err := t.downloadFileData(photo.FileID)
+		if err != nil {
+			log.Printf("[telegram] download photo %s failed: %v", photo.FileID, err)
+		} else {
+			mediaType := http.DetectContentType(data)
+			if mediaType == "application/octet-stream" {
+				mediaType = "image/jpeg"
+			}
+			contentBlocks = append(contentBlocks, model.ContentBlock{
+				Type:      model.ContentBlockImage,
+				MediaType: mediaType,
+				Data:      base64.StdEncoding.EncodeToString(data),
+			})
+		}
+	}
+
+	if msg.Document != nil {
+		data, err := t.downloadFileData(msg.Document.FileID)
+		if err != nil {
+			log.Printf("[telegram] download document %s failed: %v", msg.Document.FileID, err)
+		} else {
+			mediaType := msg.Document.MimeType
+			if mediaType == "" {
+				mediaType = http.DetectContentType(data)
+			}
+			if mediaType == "" {
+				mediaType = "application/octet-stream"
+			}
+			// Use image block type for image MIME types sent as documents
+			blockType := model.ContentBlockDocument
+			if strings.HasPrefix(mediaType, "image/") {
+				blockType = model.ContentBlockImage
+			}
+			contentBlocks = append(contentBlocks, model.ContentBlock{
+				Type:      blockType,
+				MediaType: mediaType,
+				Data:      base64.StdEncoding.EncodeToString(data),
+			})
+		}
+	}
+
+	if content == "" && len(contentBlocks) == 0 {
 		return
 	}
 
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 
 	t.bus.Inbound <- bus.InboundMessage{
-		Channel:   telegramChannelName,
-		SenderID:  senderID,
-		ChatID:    chatID,
-		Content:   content,
-		Timestamp: time.Unix(int64(msg.Date), 0),
+		Channel:       telegramChannelName,
+		SenderID:      senderID,
+		ChatID:        chatID,
+		Content:       content,
+		Timestamp:     time.Unix(int64(msg.Date), 0),
+		ContentBlocks: contentBlocks,
 		Metadata: map[string]any{
 			"username":   msg.From.UserName,
 			"first_name": msg.From.FirstName,
 			"message_id": msg.MessageID,
 		},
 	}
+}
+
+func (t *TelegramChannel) downloadFileData(fileID string) ([]byte, error) {
+	if t.bot == nil {
+		return nil, fmt.Errorf("telegram bot not initialized")
+	}
+
+	file, err := t.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+	if err != nil {
+		return nil, fmt.Errorf("get telegram file: %w", err)
+	}
+
+	client := t.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Get(file.Link(t.token))
+	if err != nil {
+		return nil, fmt.Errorf("download telegram file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download telegram file: unexpected status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read telegram file body: %w", err)
+	}
+
+	if len(data) == 0 {
+		return nil, fmt.Errorf("telegram file is empty")
+	}
+
+	return data, nil
 }
 
 func (t *TelegramChannel) Stop() error {

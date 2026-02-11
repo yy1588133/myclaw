@@ -2,13 +2,14 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/cexll/agentsdk-go/pkg/api"
+	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/channel"
 	"github.com/stellarlinkco/myclaw/internal/config"
@@ -22,36 +23,16 @@ type mockRuntime struct {
 	response *api.Response
 	err      error
 	closed   bool
-	requests []api.Request
-}
-
-type mockMemoryLLM struct{}
-
-func (m *mockMemoryLLM) Extract(conversation string) (*memory.ExtractionResult, error) {
-	return &memory.ExtractionResult{}, nil
-}
-func (m *mockMemoryLLM) Compress(prompt, content string) (*memory.CompressionResult, error) {
-	return &memory.CompressionResult{}, nil
-}
-func (m *mockMemoryLLM) UpdateProfile(currentProfile, newFacts string) (*memory.ProfileResult, error) {
-	return &memory.ProfileResult{}, nil
-}
-
-type slowExtractLLM struct{}
-
-func (m *slowExtractLLM) Extract(conversation string) (*memory.ExtractionResult, error) {
-	time.Sleep(500 * time.Millisecond)
-	return &memory.ExtractionResult{}, nil
-}
-func (m *slowExtractLLM) Compress(prompt, content string) (*memory.CompressionResult, error) {
-	return &memory.CompressionResult{}, nil
-}
-func (m *slowExtractLLM) UpdateProfile(currentProfile, newFacts string) (*memory.ProfileResult, error) {
-	return &memory.ProfileResult{}, nil
+	reqCh    chan api.Request
 }
 
 func (m *mockRuntime) Run(ctx context.Context, req api.Request) (*api.Response, error) {
-	m.requests = append(m.requests, req)
+	if m.reqCh != nil {
+		select {
+		case m.reqCh <- req:
+		default:
+		}
+	}
 	return m.response, m.err
 }
 
@@ -211,7 +192,7 @@ func TestGateway_RunAgent(t *testing.T) {
 		runtime: mockRt,
 	}
 
-	result, err := g.runAgent(context.Background(), "test", "session1")
+	result, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != nil {
 		t.Errorf("runAgent error: %v", err)
 	}
@@ -225,7 +206,7 @@ func TestGateway_RunAgent_NilResponse(t *testing.T) {
 
 	g := &Gateway{runtime: mockRt}
 
-	result, err := g.runAgent(context.Background(), "test", "session1")
+	result, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != nil {
 		t.Errorf("runAgent error: %v", err)
 	}
@@ -239,7 +220,7 @@ func TestGateway_RunAgent_NilResult(t *testing.T) {
 
 	g := &Gateway{runtime: mockRt}
 
-	result, err := g.runAgent(context.Background(), "test", "session1")
+	result, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != nil {
 		t.Errorf("runAgent error: %v", err)
 	}
@@ -299,14 +280,112 @@ func TestGateway_ProcessLoop(t *testing.T) {
 	cancel()
 }
 
+func TestGateway_ProcessLoop_WithContentBlocks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			Workspace: tmpDir,
+		},
+	}
+
+	msgBus := bus.NewMessageBus(10)
+	imgBlock := model.ContentBlock{
+		Type:      model.ContentBlockImage,
+		MediaType: "image/jpeg",
+		Data:      base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xd9}),
+	}
+	blocks := []model.ContentBlock{imgBlock}
+	reqCh := make(chan api.Request, 1)
+	mockRt := &mockRuntime{
+		reqCh: reqCh,
+		response: &api.Response{
+			Result: &api.Result{Output: "multimodal response"},
+		},
+	}
+
+	g := &Gateway{
+		cfg:     cfg,
+		bus:     msgBus,
+		runtime: mockRt,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go g.processLoop(ctx)
+
+	msgBus.Inbound <- bus.InboundMessage{
+		Channel:       "telegram",
+		SenderID:      "123",
+		ChatID:        "456",
+		Content:       "caption text",
+		ContentBlocks: blocks,
+	}
+
+	select {
+	case req := <-reqCh:
+		// Workaround merges prompt into ContentBlocks and clears Prompt
+		if req.Prompt != "" {
+			t.Errorf("runtime prompt = %q, want empty (merged into ContentBlocks)", req.Prompt)
+		}
+		if req.SessionID != "telegram:456" {
+			t.Errorf("runtime sessionID = %q, want telegram:456", req.SessionID)
+		}
+		// Expect 2 blocks: prepended text + original image
+		if len(req.ContentBlocks) != 2 {
+			t.Fatalf("runtime content blocks len = %d, want 2", len(req.ContentBlocks))
+		}
+		if req.ContentBlocks[0].Type != model.ContentBlockText || req.ContentBlocks[0].Text != "caption text" {
+			t.Errorf("content block[0] = %+v, want text 'caption text'", req.ContentBlocks[0])
+		}
+		if req.ContentBlocks[1] != imgBlock {
+			t.Errorf("content block[1] = %+v, want image block", req.ContentBlocks[1])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for runtime request")
+	}
+
+	select {
+	case outMsg := <-msgBus.Outbound:
+		if outMsg.Channel != "telegram" {
+			t.Errorf("outbound channel = %q, want telegram", outMsg.Channel)
+		}
+		if outMsg.ChatID != "456" {
+			t.Errorf("outbound chatID = %q, want 456", outMsg.ChatID)
+		}
+		if outMsg.Content != "multimodal response" {
+			t.Errorf("outbound content = %q, want multimodal response", outMsg.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for outbound response")
+	}
+}
+
 func TestGateway_RunAgent_Error(t *testing.T) {
 	mockRt := &mockRuntime{err: context.DeadlineExceeded}
 
 	g := &Gateway{runtime: mockRt}
 
-	_, err := g.runAgent(context.Background(), "test", "session1")
+	_, err := g.runAgent(context.Background(), "test", "session1", nil)
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestGateway_RunAgent_ContentBlocks(t *testing.T) {
+	blocks := []model.ContentBlock{{Type: model.ContentBlockText, Text: "hello multimodal"}}
+	mockRt := &mockRuntime{
+		response: &api.Response{Result: &api.Result{Output: "ok"}},
+	}
+
+	g := &Gateway{runtime: mockRt}
+	result, err := g.runAgent(context.Background(), "test", "session1", blocks)
+	if err != nil {
+		t.Fatalf("runAgent error: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("result = %q, want ok", result)
 	}
 }
 
@@ -808,195 +887,6 @@ func TestGateway_CronOnJob_Error(t *testing.T) {
 	_, err = g.cron.OnJob(job)
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
-	}
-}
-
-func TestGatewayWithMemory(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := config.DefaultConfig()
-	cfg.Agent.Workspace = tmpDir
-	cfg.Channels = config.ChannelsConfig{}
-	cfg.Memory.Enabled = true
-	cfg.Memory.DBPath = filepath.Join(tmpDir, "memory.db")
-	cfg.Provider.APIKey = "key"
-	cfg.Provider.BaseURL = "https://example.invalid/v1"
-
-	mockRt := &mockRuntime{}
-	g, err := NewWithOptions(cfg, Options{RuntimeFactory: mockRuntimeFactory(mockRt)})
-	if err != nil {
-		t.Fatalf("NewWithOptions error: %v", err)
-	}
-	defer g.Shutdown()
-
-	if g.memEngine == nil || g.extraction == nil {
-		t.Fatal("expected memory engine and extraction service when memory.enabled=true")
-	}
-	if g.mem != nil {
-		t.Fatal("legacy memory store should be nil when new memory enabled")
-	}
-}
-
-func TestGatewayWithoutMemory(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := config.DefaultConfig()
-	cfg.Agent.Workspace = tmpDir
-	cfg.Channels = config.ChannelsConfig{}
-	cfg.Memory.Enabled = false
-
-	mockRt := &mockRuntime{}
-	g, err := NewWithOptions(cfg, Options{RuntimeFactory: mockRuntimeFactory(mockRt)})
-	if err != nil {
-		t.Fatalf("NewWithOptions error: %v", err)
-	}
-	defer g.Shutdown()
-
-	if g.mem == nil {
-		t.Fatal("expected legacy memory store when memory.enabled=false")
-	}
-	if g.memEngine != nil || g.extraction != nil {
-		t.Fatal("new memory components should be nil when disabled")
-	}
-}
-
-func TestMemoryRetrievalInProcessLoop(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	engine, err := memory.NewEngine(filepath.Join(tmpDir, "memory.db"))
-	if err != nil {
-		t.Fatalf("NewEngine error: %v", err)
-	}
-	defer engine.Close()
-	engine.SetKnownProjects([]string{"myclaw"})
-	if err := engine.WriteTier2(memory.FactEntry{Content: "myclaw uses sqlite memory", Project: "myclaw", Topic: "architecture", Category: "decision", Importance: 0.9}); err != nil {
-		t.Fatalf("WriteTier2 error: %v", err)
-	}
-
-	msgBus := bus.NewMessageBus(10)
-	rt := &mockRuntime{response: &api.Response{Result: &api.Result{Output: "ok"}}}
-	g := &Gateway{
-		cfg:       &config.Config{},
-		bus:       msgBus,
-		runtime:   rt,
-		memEngine: engine,
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go g.processLoop(ctx)
-
-	msgBus.Inbound <- bus.InboundMessage{Channel: "telegram", SenderID: "u", ChatID: "c", Content: "我之前的 myclaw 架构是啥？"}
-
-	select {
-	case <-msgBus.Outbound:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting outbound")
-	}
-
-	if len(rt.requests) == 0 {
-		t.Fatal("expected runtime request")
-	}
-	if !strings.Contains(rt.requests[0].Prompt, "[相关记忆]") {
-		t.Fatalf("expected retrieval memory injected in prompt, got %q", rt.requests[0].Prompt)
-	}
-}
-
-func TestMemoryCronJobs(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := config.DefaultConfig()
-	cfg.Agent.Workspace = tmpDir
-	cfg.Channels = config.ChannelsConfig{}
-	cfg.Memory.Enabled = true
-	cfg.Memory.DBPath = filepath.Join(tmpDir, "memory.db")
-	cfg.Provider.APIKey = "key"
-	cfg.Provider.BaseURL = "https://example.invalid/v1"
-
-	g, err := NewWithOptions(cfg, Options{RuntimeFactory: mockRuntimeFactory(&mockRuntime{})})
-	if err != nil {
-		t.Fatalf("NewWithOptions error: %v", err)
-	}
-	defer g.Shutdown()
-
-	jobs := g.cron.ListJobs()
-	hasDaily := false
-	hasWeekly := false
-	for _, j := range jobs {
-		if j.Name == "memory-daily-compress" {
-			hasDaily = true
-		}
-		if j.Name == "memory-weekly-compress" {
-			hasWeekly = true
-		}
-	}
-	if !hasDaily || !hasWeekly {
-		t.Fatalf("expected memory cron jobs registered, daily=%v weekly=%v", hasDaily, hasWeekly)
-	}
-}
-
-func TestGatewayGracefulShutdown(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	engine, err := memory.NewEngine(filepath.Join(tmpDir, "memory.db"))
-	if err != nil {
-		t.Fatalf("NewEngine error: %v", err)
-	}
-
-	msgBus := bus.NewMessageBus(10)
-	chMgr, _ := channel.NewChannelManager(config.ChannelsConfig{}, msgBus)
-	cronSvc := cron.NewService(filepath.Join(tmpDir, "cron.json"))
-	rt := &mockRuntime{}
-
-	g := &Gateway{
-		cfg:        &config.Config{Memory: config.MemoryConfig{Extraction: config.ExtractionConfig{QuietGap: "1h", TokenBudget: 0.6, DailyFlush: "03:00"}}},
-		bus:        msgBus,
-		channels:   chMgr,
-		cron:       cronSvc,
-		hb:         heartbeat.New(tmpDir, nil, 0),
-		runtime:    rt,
-		memEngine:  engine,
-		extraction: memory.NewExtractionService(engine, &mockMemoryLLM{}, config.ExtractionConfig{QuietGap: "1h", TokenBudget: 0.6, DailyFlush: "03:00"}),
-	}
-
-	if err := g.Shutdown(); err != nil {
-		t.Fatalf("Shutdown error: %v", err)
-	}
-	if !rt.closed {
-		t.Fatal("runtime should be closed on graceful shutdown")
-	}
-}
-
-func TestMemoryExtractionAsync(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	engine, err := memory.NewEngine(filepath.Join(tmpDir, "memory.db"))
-	if err != nil {
-		t.Fatalf("NewEngine error: %v", err)
-	}
-	defer engine.Close()
-
-	msgBus := bus.NewMessageBus(10)
-	rt := &mockRuntime{response: &api.Response{Result: &api.Result{Output: "ok"}}}
-	extract := memory.NewExtractionService(engine, &slowExtractLLM{}, config.ExtractionConfig{QuietGap: "1h", TokenBudget: 0.1, DailyFlush: "03:00"})
-
-	g := &Gateway{cfg: &config.Config{}, bus: msgBus, runtime: rt, memEngine: engine, extraction: extract}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go g.processLoop(ctx)
-
-	bigMessage := strings.Repeat("这是一条触发异步提取的长消息", 120)
-	start := time.Now()
-	msgBus.Inbound <- bus.InboundMessage{Channel: "telegram", SenderID: "u1", ChatID: "c1", Content: bigMessage}
-
-	select {
-	case <-msgBus.Outbound:
-		if time.Since(start) > 200*time.Millisecond {
-			t.Fatalf("expected outbound response not blocked by extraction")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for outbound response")
 	}
 }
 

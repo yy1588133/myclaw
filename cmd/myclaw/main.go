@@ -12,10 +12,10 @@ import (
 
 	"github.com/cexll/agentsdk-go/pkg/api"
 	"github.com/cexll/agentsdk-go/pkg/model"
+	"github.com/spf13/cobra"
 	"github.com/stellarlinkco/myclaw/internal/config"
 	"github.com/stellarlinkco/myclaw/internal/gateway"
 	"github.com/stellarlinkco/myclaw/internal/memory"
-	"github.com/spf13/cobra"
 )
 
 // Runtime interface for agent runtime (allows mocking in tests)
@@ -72,6 +72,13 @@ func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 		ModelFactory:  provider,
 		SystemPrompt:  sysPrompt,
 		MaxIterations: cfg.Agent.MaxToolIterations,
+		MCPServers:    cfg.MCP.Servers,
+		TokenTracking: cfg.TokenTracking.Enabled,
+		AutoCompact: api.CompactConfig{
+			Enabled:       cfg.AutoCompact.Enabled,
+			Threshold:     cfg.AutoCompact.Threshold,
+			PreserveCount: cfg.AutoCompact.PreserveCount,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create runtime: %w", err)
@@ -293,6 +300,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Telegram: enabled=%v\n", cfg.Channels.Telegram.Enabled)
 	fmt.Printf("Feishu: enabled=%v\n", cfg.Channels.Feishu.Enabled)
+	fmt.Printf("WeCom: enabled=%v\n", cfg.Channels.WeCom.Enabled)
 
 	if _, err := os.Stat(cfg.Agent.Workspace); err != nil {
 		fmt.Println("Workspace: not found (run 'myclaw onboard')")

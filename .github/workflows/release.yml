@@ -1,30 +1,21 @@
-name: release
+name: Release
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing git tag to publish (example: v1.2.3)"
-        required: true
-        type: string
 
-permissions:
-  contents: write
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   guard-main-tag:
     name: guard-main-tag
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-      REF_TO_BUILD: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.REF_TO_BUILD }}
           fetch-depth: 0
 
       - name: Ensure tag points to main history
@@ -32,15 +23,56 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin main --depth=1
-
-          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{commit}")"
           if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
-            echo "Tag ${TAG} does not point to a commit in origin/main history." >&2
+            echo "Tag ${GITHUB_REF_NAME} does not point to a commit in origin/main history." >&2
             echo "Only tags from main are allowed to publish releases." >&2
             exit 1
           fi
 
-  build:
+  github-release:
+    runs-on: ubuntu-latest
+    needs: guard-main-tag
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Release Notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIOUS_TAG="$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n 1 || true)"
+          if [ -z "$PREVIOUS_TAG" ]; then
+            COMMITS="$(git log --pretty=format:"- %s (%h)" --no-merges)"
+            CHANGELOG_LINE="First tagged release"
+          else
+            COMMITS="$(git log "${PREVIOUS_TAG}".."${GITHUB_REF_NAME}" --pretty=format:"- %s (%h)" --no-merges)"
+            CHANGELOG_LINE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${GITHUB_REF_NAME}"
+          fi
+          cat > release_notes.md <<EOF
+          ## What's Changed
+
+          ${COMMITS}
+
+          ${CHANGELOG_LINE}
+          EOF
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release_notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release_notes.md
+          fi
+
+  build-binaries:
     name: build-${{ matrix.goos }}-${{ matrix.goarch }}
     runs-on: ubuntu-latest
     needs: guard-main-tag
@@ -56,48 +88,45 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
-    env:
-      TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-      REF_TO_BUILD: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.REF_TO_BUILD }}
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Build release binary
+      - name: Build binary
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-
           EXT=""
           if [[ "${{ matrix.goos }}" == "windows" ]]; then
             EXT=".exe"
           fi
-
-          OUT="dist/myclaw_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}"
+          OUT="dist/myclaw_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}"
           CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" go build -trimpath -ldflags="-s -w" -o "$OUT" ./cmd/myclaw
 
-      - name: Upload build artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: myclaw-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/myclaw_*
           if-no-files-found: error
 
-  publish:
-    name: publish
+  upload-binaries:
+    name: upload-binaries
     runs-on: ubuntu-latest
-    needs: build
-    env:
-      TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+    needs: [github-release, build-binaries]
+    permissions:
+      contents: write
     steps:
-      - name: Download release artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
@@ -110,12 +139,44 @@ jobs:
           cd dist
           sha256sum myclaw_* > checksums.txt
 
-      - name: Create GitHub release and upload assets
-        uses: softprops/action-gh-release@v2
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: guard-main-tag
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          tag_name: ${{ env.TAG }}
-          name: ${{ env.TAG }}
-          generate_release_notes: true
-          files: |
-            dist/myclaw_*
-            dist/checksums.txt
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

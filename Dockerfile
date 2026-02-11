@@ -19,7 +19,7 @@ RUN mkdir -p /root/.myclaw/workspace
 
 VOLUME ["/root/.myclaw"]
 
-EXPOSE 18790 9876
+EXPOSE 18790 9876 9886
 
 ENTRYPOINT ["myclaw"]
 CMD ["gateway"]

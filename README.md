@@ -6,13 +6,17 @@ Personal AI assistant built on [agentsdk-go](https://github.com/cexll/agentsdk-g
 
 - **CLI Agent** - Single message or interactive REPL mode
 - **Gateway** - Full orchestration: channels + cron + heartbeat
-- **Telegram Channel** - Receive and send messages via Telegram bot
+- **Telegram Channel** - Receive and send messages via Telegram bot (text + image + document)
 - **Feishu Channel** - Receive and send messages via Feishu (Lark) bot
+- **WeCom Channel** - Receive inbound messages and send markdown replies via WeCom intelligent bot API mode
+- **WhatsApp Channel** - Receive and send messages via WhatsApp (QR code login)
+- **Web UI** - Browser-based chat interface with WebSocket (responsive, PC + mobile)
 - **Multi-Provider** - Support for Anthropic and OpenAI models
+- **Multimodal** - Image recognition and document processing
 - **Cron Jobs** - Scheduled tasks with JSON persistence
 - **Heartbeat** - Periodic tasks from HEARTBEAT.md
 - **Memory** - Long-term (MEMORY.md) + daily memories
-- **Tiered Memory (optional)** - SQLite-based tiered memory with retrieval, extraction, and compression
+- **Skills** - Custom skill loading from workspace
 
 ## Quick Start
 
@@ -96,13 +100,13 @@ make gateway
                   └───────────────────────────────────────┘
 
 Data Flow (Gateway Mode):
-  Telegram/Feishu ──► Channel ──► Bus.Inbound ──► processLoop
-                                                       │
-                                                       ▼
-                                                Runtime.Run()
-                                                       │
-                                                       ▼
-                                        Bus.Outbound ──► Channel ──► Telegram/Feishu
+  Telegram/Feishu/WeCom/WhatsApp/WebUI ──► Channel ──► Bus.Inbound ──► processLoop
+                                                                      │
+                                                                      ▼
+                                                               Runtime.Run()
+                                                                      │
+                                                                      ▼
+                                       Bus.Outbound ──► Channel ──► Telegram/Feishu/WeCom/WhatsApp/WebUI
 ```
 
 ## Project Structure
@@ -111,15 +115,23 @@ Data Flow (Gateway Mode):
 cmd/myclaw/          CLI entry point (agent, gateway, onboard, status)
 internal/
   bus/               Message bus (inbound/outbound channels)
-  channel/           Channel interface + Telegram + Feishu implementations
+  channel/           Channel interface + implementations
+    telegram.go      Telegram bot (polling, text/image/document)
+    feishu.go        Feishu/Lark bot (webhook)
+    wecom.go         WeCom intelligent bot (webhook, encrypted)
+    whatsapp.go      WhatsApp (whatsmeow, QR login)
+    webui.go         Web UI (WebSocket, embedded HTML)
+    static/          Embedded web UI assets
   config/            Configuration loading (JSON + env vars)
   cron/              Cron job scheduling with JSON persistence
   gateway/           Gateway orchestration (bus + runtime + channels)
   heartbeat/         Periodic heartbeat service
   memory/            Memory system (long-term + daily)
+  skills/            Custom skill loader
 docs/
   telegram-setup.md  Telegram bot setup guide
   feishu-setup.md    Feishu bot setup guide
+  wecom-setup.md     WeCom intelligent bot setup guide
 scripts/
   setup.sh           Interactive config generator
 workspace/
@@ -154,6 +166,22 @@ Run `make setup` for interactive config, or copy `config.example.json` to `~/.my
       "verificationToken": "your-verification-token",
       "port": 9876,
       "allowFrom": []
+    },
+    "wecom": {
+      "enabled": true,
+      "token": "your-token",
+      "encodingAESKey": "your-43-char-encoding-aes-key",
+      "receiveId": "",
+      "port": 9886,
+      "allowFrom": ["zhangsan"]
+    },
+    "whatsapp": {
+      "enabled": true,
+      "allowFrom": []
+    },
+    "webui": {
+      "enabled": true,
+      "allowFrom": []
     }
   }
 }
@@ -179,46 +207,11 @@ When using OpenAI, set the model to an OpenAI model name (e.g., `gpt-4o`).
 | `MYCLAW_TELEGRAM_TOKEN` | Telegram bot token |
 | `MYCLAW_FEISHU_APP_ID` | Feishu app ID |
 | `MYCLAW_FEISHU_APP_SECRET` | Feishu app secret |
-| `MYCLAW_MEMORY_ENABLED` | Enable SQLite memory engine (`true`/`false`) |
-| `MYCLAW_MEMORY_MODEL` | Optional dedicated model for memory tasks |
-| `MYCLAW_MEMORY_API_KEY` | Optional dedicated API key for memory tasks |
-| `MYCLAW_MEMORY_BASE_URL` | Optional dedicated base URL for memory tasks |
-| `MYCLAW_MEMORY_DB_PATH` | Optional absolute DB path (defaults to `~/.myclaw/data/memory.db`) |
-| `MYCLAW_MEMORY_MAX_TOKENS` | Optional max tokens for memory model |
-| `MYCLAW_MEMORY_QUIET_GAP` | Extraction quiet gap (e.g. `3m`) |
-| `MYCLAW_MEMORY_TOKEN_BUDGET` | Extraction token budget ratio (0-1) |
-| `MYCLAW_MEMORY_DAILY_FLUSH` | Daily extraction flush time (`HH:MM`) |
+| `MYCLAW_WECOM_TOKEN` | WeCom intelligent bot callback token |
+| `MYCLAW_WECOM_ENCODING_AES_KEY` | WeCom intelligent bot callback EncodingAESKey |
+| `MYCLAW_WECOM_RECEIVE_ID` | Optional receive ID for strict decrypt validation |
 
 > Prefer environment variables over config files for sensitive values like API keys.
-
-### Memory Configuration
-
-When `memory.enabled` is `true`, gateway uses the SQLite memory engine with:
-- Tier 1 profile loading into system prompt
-- Tier 2 retrieval injection for memory-like user queries
-- Async extraction buffering after each dialog turn
-- Daily and weekly internal memory compression cron jobs
-
-Example:
-
-```json
-"memory": {
-  "enabled": true,
-  "model": "gpt-5",
-  "maxTokens": 8192,
-  "dbPath": "",
-  "provider": {
-    "type": "openai",
-    "apiKey": "sk-xxx",
-    "baseUrl": "https://example.com/v1"
-  },
-  "extraction": {
-    "quietGap": "3m",
-    "tokenBudget": 0.6,
-    "dailyFlush": "03:00"
-  }
-}
-```
 
 ## Channel Setup
 
@@ -244,6 +237,45 @@ Quick steps:
 6. Set `appId`, `appSecret`, `verificationToken` in config
 7. Run `make gateway` and `make tunnel` (for public webhook URL)
 
+### WeCom
+
+See [docs/wecom-setup.md](docs/wecom-setup.md) for detailed setup guide.
+
+Quick steps:
+1. Create a WeCom intelligent bot in API mode and get `token`, `encodingAESKey`
+2. Configure callback URL: `https://your-domain/wecom/bot`
+3. Set `token` and `encodingAESKey` in both WeCom console and myclaw config
+4. Optionally set `receiveId` if you need strict decrypt receive-id validation
+5. Optional: set `allowFrom` to your user ID(s) as whitelist (if unset/empty, inbound from all users is allowed)
+6. Run `make gateway`
+
+WeCom notes:
+- Outbound uses `response_url` and sends `markdown` payloads
+- `response_url` is short-lived (often single-use); delayed or repeated replies may fail
+- Outbound markdown content over 20480 bytes is truncated
+
+### WhatsApp
+
+Quick steps:
+1. Set `"whatsapp": {"enabled": true}` in config
+2. Run `make gateway`
+3. Scan the QR code displayed in terminal with your WhatsApp
+4. Session is stored locally in SQLite (auto-reconnects on restart)
+
+### Web UI
+
+Quick steps:
+1. Set `"webui": {"enabled": true}` in config
+2. Run `make gateway`
+3. Open `http://localhost:18790` in your browser (PC or mobile)
+
+Features:
+- Responsive design (PC + mobile)
+- Dark mode (follows system preference)
+- WebSocket real-time communication
+- Markdown rendering (code blocks, bold, italic, links)
+- Auto-reconnect on connection loss
+
 ## Docker Deployment
 
 ### Build and Run
@@ -256,6 +288,7 @@ docker run -d \
   -e MYCLAW_TELEGRAM_TOKEN=your-token \
   -p 18790:18790 \
   -p 9876:9876 \
+  -p 9886:9886 \
   -v myclaw-data:/root/.myclaw \
   myclaw
 ```
@@ -307,17 +340,6 @@ make test-race       # Run with race detection
 make test-cover      # Run with coverage report
 make lint            # Run golangci-lint
 ```
-
-| Package | Coverage |
-|---------|----------|
-| internal/bus | 100.0% |
-| internal/heartbeat | 97.1% |
-| internal/cron | 94.4% |
-| internal/config | 91.2% |
-| internal/channel | 90.5% |
-| internal/gateway | 90.2% |
-| internal/memory | 89.1% |
-| cmd/myclaw | 82.3% |
 
 ## License
 

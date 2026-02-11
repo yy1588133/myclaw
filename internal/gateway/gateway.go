@@ -18,6 +18,7 @@ import (
 	"github.com/stellarlinkco/myclaw/internal/cron"
 	"github.com/stellarlinkco/myclaw/internal/heartbeat"
 	"github.com/stellarlinkco/myclaw/internal/memory"
+	"github.com/stellarlinkco/myclaw/internal/skills"
 )
 
 // Runtime interface for agent runtime (allows mocking in tests)
@@ -50,6 +51,10 @@ type Options struct {
 
 // DefaultRuntimeFactory creates the default agentsdk-go runtime
 func DefaultRuntimeFactory(cfg *config.Config, sysPrompt string) (Runtime, error) {
+	return newRuntime(cfg, sysPrompt, nil)
+}
+
+func newRuntime(cfg *config.Config, sysPrompt string, skillRegs []api.SkillRegistration) (Runtime, error) {
 	var provider api.ModelFactory
 	switch cfg.Provider.Type {
 	case "openai":
@@ -73,6 +78,14 @@ func DefaultRuntimeFactory(cfg *config.Config, sysPrompt string) (Runtime, error
 		ModelFactory:  provider,
 		SystemPrompt:  sysPrompt,
 		MaxIterations: cfg.Agent.MaxToolIterations,
+		MCPServers:    cfg.MCP.Servers,
+		TokenTracking: cfg.TokenTracking.Enabled,
+		AutoCompact: api.CompactConfig{
+			Enabled:       cfg.AutoCompact.Enabled,
+			Threshold:     cfg.AutoCompact.Threshold,
+			PreserveCount: cfg.AutoCompact.PreserveCount,
+		},
+		Skills: skillRegs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create runtime: %w", err)
@@ -88,9 +101,7 @@ type Gateway struct {
 	cron       *cron.Service
 	hb         *heartbeat.Service
 	mem        *memory.MemoryStore
-	memEngine  *memory.Engine
-	extraction *memory.ExtractionService
-	memLLM     memory.LLMClient
+	skillRegs  []api.SkillRegistration
 	signalChan chan os.Signal // for testing
 }
 
@@ -107,34 +118,34 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	g.bus = bus.NewMessageBus(config.DefaultBufSize)
 
 	// Memory
-	if cfg.Memory.Enabled {
-		dbPath := cfg.Memory.DBPath
-		if strings.TrimSpace(dbPath) == "" {
-			dbPath = filepath.Join(config.ConfigDir(), "data", "memory.db")
-		}
-		engine, err := memory.NewEngine(dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("create memory engine: %w", err)
-		}
-		g.memEngine = engine
-		if err := memory.MigrateFromFiles(cfg.Agent.Workspace, engine); err != nil {
-			log.Printf("[memory] migration warning: %v", err)
-		}
-		g.memLLM = memory.NewLLMClient(cfg)
-		g.extraction = memory.NewExtractionService(engine, g.memLLM, cfg.Memory.Extraction)
-	} else {
-		g.mem = memory.NewMemoryStore(cfg.Agent.Workspace)
-	}
+	g.mem = memory.NewMemoryStore(cfg.Agent.Workspace)
 
 	// Build system prompt
 	sysPrompt := g.buildSystemPrompt()
 
+	if cfg.Skills.Enabled {
+		skillDir := cfg.Skills.Dir
+		if skillDir == "" {
+			skillDir = filepath.Join(cfg.Agent.Workspace, "skills")
+		}
+		skillRegs, err := skills.LoadSkills(skillDir)
+		if err != nil {
+			log.Printf("[gateway] skills load warning: %v", err)
+		}
+		g.skillRegs = skillRegs
+	}
+
 	// Create runtime using factory (allows injection for testing)
 	factory := opts.RuntimeFactory
+	var (
+		rt  Runtime
+		err error
+	)
 	if factory == nil {
-		factory = DefaultRuntimeFactory
+		rt, err = newRuntime(cfg, sysPrompt, g.skillRegs)
+	} else {
+		rt, err = factory(cfg, sysPrompt)
 	}
-	rt, err := factory(cfg, sysPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -145,26 +156,13 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 
 	// runAgent helper for cron/heartbeat
 	runAgent := func(prompt string) (string, error) {
-		return g.runAgent(context.Background(), prompt, "system")
+		return g.runAgent(context.Background(), prompt, "system", nil)
 	}
 
 	// Cron
 	cronStorePath := filepath.Join(config.ConfigDir(), "data", "cron", "jobs.json")
 	g.cron = cron.NewService(cronStorePath)
 	g.cron.OnJob = func(job cron.CronJob) (string, error) {
-		switch job.Payload.Message {
-		case "__internal:memory:daily_compress":
-			if g.memEngine == nil || g.memLLM == nil {
-				return "memory disabled", nil
-			}
-			return "ok", g.memEngine.DailyCompress(g.memLLM)
-		case "__internal:memory:weekly_compress":
-			if g.memEngine == nil || g.memLLM == nil {
-				return "memory disabled", nil
-			}
-			return "ok", g.memEngine.WeeklyDeepCompress(g.memLLM)
-		}
-
 		result, err := runAgent(job.Payload.Message)
 		if err != nil {
 			return "", err
@@ -178,16 +176,12 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 		}
 		return result, nil
 	}
-	if g.memEngine != nil {
-		_, _ = g.cron.AddJob("memory-daily-compress", cron.Schedule{Kind: "cron", Expr: "0 0 3 * * *"}, cron.Payload{Message: "__internal:memory:daily_compress"})
-		_, _ = g.cron.AddJob("memory-weekly-compress", cron.Schedule{Kind: "cron", Expr: "0 0 4 * * 1"}, cron.Payload{Message: "__internal:memory:weekly_compress"})
-	}
 
 	// Heartbeat
 	g.hb = heartbeat.New(cfg.Agent.Workspace, runAgent, 0)
 
-	// Channels
-	chMgr, err := channel.NewChannelManager(cfg.Channels, g.bus)
+	// Channels (with gateway config for WebUI port)
+	chMgr, err := channel.NewChannelManagerWithGateway(cfg.Channels, cfg.Gateway, g.bus)
 	if err != nil {
 		return nil, fmt.Errorf("create channel manager: %w", err)
 	}
@@ -209,25 +203,28 @@ func (g *Gateway) buildSystemPrompt() string {
 		sb.WriteString("\n\n")
 	}
 
-	if g.memEngine != nil {
-		if profile, err := g.memEngine.LoadTier1(); err == nil && profile != "" {
-			sb.WriteString("# Core Memory\n")
-			sb.WriteString(profile)
-			sb.WriteString("\n\n")
-		}
-	} else if g.mem != nil {
-		if memCtx := g.mem.GetMemoryContext(); memCtx != "" {
-			sb.WriteString(memCtx)
-		}
+	if memCtx := g.mem.GetMemoryContext(); memCtx != "" {
+		sb.WriteString(memCtx)
 	}
 
 	return sb.String()
 }
 
-func (g *Gateway) runAgent(ctx context.Context, prompt, sessionID string) (string, error) {
+func (g *Gateway) runAgent(ctx context.Context, prompt, sessionID string, contentBlocks []model.ContentBlock) (string, error) {
+	// Workaround: agentsdk-go drops Prompt when ContentBlocks exist (anthropic.go:420-431).
+	// Merge text prompt into ContentBlocks so both text and media reach the API.
+	blocks := contentBlocks
+	if len(contentBlocks) > 0 && strings.TrimSpace(prompt) != "" {
+		blocks = make([]model.ContentBlock, 0, len(contentBlocks)+1)
+		blocks = append(blocks, model.ContentBlock{Type: model.ContentBlockText, Text: prompt})
+		blocks = append(blocks, contentBlocks...)
+		prompt = "" // clear to avoid duplication if SDK is fixed later
+	}
+
 	resp, err := g.runtime.Run(ctx, api.Request{
-		Prompt:    prompt,
-		SessionID: sessionID,
+		Prompt:        prompt,
+		ContentBlocks: blocks,
+		SessionID:     sessionID,
 	})
 	if err != nil {
 		return "", err
@@ -259,10 +256,6 @@ func (g *Gateway) Run(ctx context.Context) error {
 		}
 	}()
 
-	if g.extraction != nil {
-		g.extraction.Start(ctx)
-	}
-
 	go g.processLoop(ctx)
 
 	log.Printf("[gateway] running on %s:%d", g.cfg.Gateway.Host, g.cfg.Gateway.Port)
@@ -285,17 +278,7 @@ func (g *Gateway) processLoop(ctx context.Context) {
 		case msg := <-g.bus.Inbound:
 			log.Printf("[gateway] inbound from %s/%s: %s", msg.Channel, msg.SenderID, truncate(msg.Content, 80))
 
-			prompt := msg.Content
-			if g.memEngine != nil && memory.ShouldRetrieve(msg.Content) {
-				memories, err := g.memEngine.Retrieve(msg.Content)
-				if err != nil {
-					log.Printf("[memory] retrieve error: %v", err)
-				} else if len(memories) > 0 {
-					prompt = fmt.Sprintf("[相关记忆]\n%s\n\n[用户消息]\n%s", memory.FormatMemories(memories), msg.Content)
-				}
-			}
-
-			result, err := g.runAgent(ctx, prompt, msg.SessionKey())
+			result, err := g.runAgent(ctx, msg.Content, msg.SessionKey(), msg.ContentBlocks)
 			if err != nil {
 				log.Printf("[gateway] agent error: %v", err)
 				result = "Sorry, I encountered an error processing your message."
@@ -308,15 +291,6 @@ func (g *Gateway) processLoop(ctx context.Context) {
 					Content: result,
 				}
 			}
-
-			if g.extraction != nil {
-				go func(m bus.InboundMessage, reply string) {
-					g.extraction.BufferMessage(m.Channel, m.SenderID, "user", m.Content)
-					if reply != "" {
-						g.extraction.BufferMessage(m.Channel, "", "assistant", reply)
-					}
-				}(msg, result)
-			}
 		case <-ctx.Done():
 			return
 		}
@@ -326,12 +300,6 @@ func (g *Gateway) processLoop(ctx context.Context) {
 func (g *Gateway) Shutdown() error {
 	g.cron.Stop()
 	_ = g.channels.StopAll()
-	if g.extraction != nil {
-		g.extraction.Stop()
-	}
-	if g.memEngine != nil {
-		_ = g.memEngine.Close()
-	}
 	if g.runtime != nil {
 		g.runtime.Close()
 	}

@@ -88,6 +88,9 @@ type Gateway struct {
 	cron       *cron.Service
 	hb         *heartbeat.Service
 	mem        *memory.MemoryStore
+	memEngine  *memory.Engine
+	extraction *memory.ExtractionService
+	memLLM     memory.LLMClient
 	signalChan chan os.Signal // for testing
 }
 
@@ -104,7 +107,24 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	g.bus = bus.NewMessageBus(config.DefaultBufSize)
 
 	// Memory
-	g.mem = memory.NewMemoryStore(cfg.Agent.Workspace)
+	if cfg.Memory.Enabled {
+		dbPath := cfg.Memory.DBPath
+		if strings.TrimSpace(dbPath) == "" {
+			dbPath = filepath.Join(config.ConfigDir(), "data", "memory.db")
+		}
+		engine, err := memory.NewEngine(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("create memory engine: %w", err)
+		}
+		g.memEngine = engine
+		if err := memory.MigrateFromFiles(cfg.Agent.Workspace, engine); err != nil {
+			log.Printf("[memory] migration warning: %v", err)
+		}
+		g.memLLM = memory.NewLLMClient(cfg)
+		g.extraction = memory.NewExtractionService(engine, g.memLLM, cfg.Memory.Extraction)
+	} else {
+		g.mem = memory.NewMemoryStore(cfg.Agent.Workspace)
+	}
 
 	// Build system prompt
 	sysPrompt := g.buildSystemPrompt()
@@ -132,6 +152,19 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	cronStorePath := filepath.Join(config.ConfigDir(), "data", "cron", "jobs.json")
 	g.cron = cron.NewService(cronStorePath)
 	g.cron.OnJob = func(job cron.CronJob) (string, error) {
+		switch job.Payload.Message {
+		case "__internal:memory:daily_compress":
+			if g.memEngine == nil || g.memLLM == nil {
+				return "memory disabled", nil
+			}
+			return "ok", g.memEngine.DailyCompress(g.memLLM)
+		case "__internal:memory:weekly_compress":
+			if g.memEngine == nil || g.memLLM == nil {
+				return "memory disabled", nil
+			}
+			return "ok", g.memEngine.WeeklyDeepCompress(g.memLLM)
+		}
+
 		result, err := runAgent(job.Payload.Message)
 		if err != nil {
 			return "", err
@@ -144,6 +177,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 			}
 		}
 		return result, nil
+	}
+	if g.memEngine != nil {
+		_, _ = g.cron.AddJob("memory-daily-compress", cron.Schedule{Kind: "cron", Expr: "0 0 3 * * *"}, cron.Payload{Message: "__internal:memory:daily_compress"})
+		_, _ = g.cron.AddJob("memory-weekly-compress", cron.Schedule{Kind: "cron", Expr: "0 0 4 * * 1"}, cron.Payload{Message: "__internal:memory:weekly_compress"})
 	}
 
 	// Heartbeat
@@ -172,8 +209,16 @@ func (g *Gateway) buildSystemPrompt() string {
 		sb.WriteString("\n\n")
 	}
 
-	if memCtx := g.mem.GetMemoryContext(); memCtx != "" {
-		sb.WriteString(memCtx)
+	if g.memEngine != nil {
+		if profile, err := g.memEngine.LoadTier1(); err == nil && profile != "" {
+			sb.WriteString("# Core Memory\n")
+			sb.WriteString(profile)
+			sb.WriteString("\n\n")
+		}
+	} else if g.mem != nil {
+		if memCtx := g.mem.GetMemoryContext(); memCtx != "" {
+			sb.WriteString(memCtx)
+		}
 	}
 
 	return sb.String()
@@ -214,6 +259,10 @@ func (g *Gateway) Run(ctx context.Context) error {
 		}
 	}()
 
+	if g.extraction != nil {
+		g.extraction.Start(ctx)
+	}
+
 	go g.processLoop(ctx)
 
 	log.Printf("[gateway] running on %s:%d", g.cfg.Gateway.Host, g.cfg.Gateway.Port)
@@ -236,7 +285,17 @@ func (g *Gateway) processLoop(ctx context.Context) {
 		case msg := <-g.bus.Inbound:
 			log.Printf("[gateway] inbound from %s/%s: %s", msg.Channel, msg.SenderID, truncate(msg.Content, 80))
 
-			result, err := g.runAgent(ctx, msg.Content, msg.SessionKey())
+			prompt := msg.Content
+			if g.memEngine != nil && memory.ShouldRetrieve(msg.Content) {
+				memories, err := g.memEngine.Retrieve(msg.Content)
+				if err != nil {
+					log.Printf("[memory] retrieve error: %v", err)
+				} else if len(memories) > 0 {
+					prompt = fmt.Sprintf("[相关记忆]\n%s\n\n[用户消息]\n%s", memory.FormatMemories(memories), msg.Content)
+				}
+			}
+
+			result, err := g.runAgent(ctx, prompt, msg.SessionKey())
 			if err != nil {
 				log.Printf("[gateway] agent error: %v", err)
 				result = "Sorry, I encountered an error processing your message."
@@ -249,6 +308,15 @@ func (g *Gateway) processLoop(ctx context.Context) {
 					Content: result,
 				}
 			}
+
+			if g.extraction != nil {
+				go func(m bus.InboundMessage, reply string) {
+					g.extraction.BufferMessage(m.Channel, m.SenderID, "user", m.Content)
+					if reply != "" {
+						g.extraction.BufferMessage(m.Channel, "", "assistant", reply)
+					}
+				}(msg, result)
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -258,6 +326,12 @@ func (g *Gateway) processLoop(ctx context.Context) {
 func (g *Gateway) Shutdown() error {
 	g.cron.Stop()
 	_ = g.channels.StopAll()
+	if g.extraction != nil {
+		g.extraction.Stop()
+	}
+	if g.memEngine != nil {
+		_ = g.memEngine.Close()
+	}
 	if g.runtime != nil {
 		g.runtime.Close()
 	}

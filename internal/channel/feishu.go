@@ -2,20 +2,30 @@ package channel
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/config"
 )
 
 const feishuChannelName = "feishu"
+
+const (
+	feishuInboundImageMaxBytes = 10 << 20 // 10MB
+	feishuInboundImageTimeout  = 10 * time.Second
+)
+
+type FeishuImageDownloader func(ctx context.Context, tenantAccessToken, imageKey string) (string, string, error)
 
 // FeishuClient interface for sending messages (allows mocking)
 type FeishuClient interface {
@@ -141,11 +151,12 @@ var defaultFeishuClientFactory FeishuClientFactory = func(appID, appSecret strin
 
 type FeishuChannel struct {
 	BaseChannel
-	cfg           config.FeishuConfig
-	client        FeishuClient
-	server        *http.Server
-	cancel        context.CancelFunc
-	clientFactory FeishuClientFactory
+	cfg             config.FeishuConfig
+	client          FeishuClient
+	server          *http.Server
+	cancel          context.CancelFunc
+	clientFactory   FeishuClientFactory
+	imageDownloader FeishuImageDownloader
 }
 
 func NewFeishuChannel(cfg config.FeishuConfig, b *bus.MessageBus) (*FeishuChannel, error) {
@@ -158,9 +169,10 @@ func NewFeishuChannelWithFactory(cfg config.FeishuConfig, b *bus.MessageBus, fac
 	}
 
 	ch := &FeishuChannel{
-		BaseChannel:   NewBaseChannel(feishuChannelName, b, cfg.AllowFrom),
-		cfg:           cfg,
-		clientFactory: factory,
+		BaseChannel:     NewBaseChannel(feishuChannelName, b, cfg.AllowFrom),
+		cfg:             cfg,
+		clientFactory:   factory,
+		imageDownloader: downloadFeishuImageAsBase64,
 	}
 	return ch, nil
 }
@@ -280,30 +292,158 @@ func (f *FeishuChannel) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if event.Event.Message.MessageType != "text" {
+	messageType := strings.ToLower(strings.TrimSpace(event.Event.Message.MessageType))
+	content, contentBlocks, messageMetadata, err := f.parseFeishuInboundMessage(
+		context.Background(),
+		messageType,
+		event.Event.Message.Content,
+	)
+	if err != nil {
+		log.Printf("[feishu] parse message error: %v", err)
+		return
+	}
+	if content == "" && len(contentBlocks) == 0 {
 		return
 	}
 
-	var textContent struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal([]byte(event.Event.Message.Content), &textContent); err != nil {
-		log.Printf("[feishu] parse content error: %v", err)
-		return
-	}
-
-	if textContent.Text == "" {
-		return
+	metadata := map[string]any{"message_type": event.Event.Message.MessageType}
+	for k, v := range messageMetadata {
+		metadata[k] = v
 	}
 
 	f.bus.Inbound <- bus.InboundMessage{
-		Channel:   feishuChannelName,
-		SenderID:  senderID,
-		ChatID:    event.Event.Message.ChatID,
-		Content:   textContent.Text,
-		Timestamp: time.Now(),
-		Metadata: map[string]any{
-			"message_type": event.Event.Message.MessageType,
-		},
+		Channel:       feishuChannelName,
+		SenderID:      senderID,
+		ChatID:        event.Event.Message.ChatID,
+		Content:       content,
+		Timestamp:     time.Now(),
+		ContentBlocks: contentBlocks,
+		Metadata:      metadata,
 	}
+}
+
+func (f *FeishuChannel) parseFeishuInboundMessage(ctx context.Context, messageType, rawContent string) (string, []model.ContentBlock, map[string]any, error) {
+	if messageType == "" {
+		return "", nil, nil, nil
+	}
+
+	switch messageType {
+	case "text":
+		var textContent struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(rawContent), &textContent); err != nil {
+			return "", nil, nil, fmt.Errorf("parse text content: %w", err)
+		}
+		content := strings.TrimSpace(textContent.Text)
+		if content == "" {
+			return "", nil, nil, nil
+		}
+		return content, nil, nil, nil
+
+	case "image":
+		var imageContent struct {
+			ImageKey string `json:"image_key"`
+		}
+		if err := json.Unmarshal([]byte(rawContent), &imageContent); err != nil {
+			return "", nil, nil, fmt.Errorf("parse image content: %w", err)
+		}
+
+		imageKey := strings.TrimSpace(imageContent.ImageKey)
+		if imageKey == "" {
+			return "", nil, nil, fmt.Errorf("missing image_key")
+		}
+
+		block, err := f.buildFeishuImageContentBlock(ctx, imageKey)
+		if err != nil {
+			log.Printf("[feishu] image download warning: %v", err)
+		}
+		if block == nil {
+			return "[image]", nil, map[string]any{"image_key": imageKey}, nil
+		}
+		return "[image]", []model.ContentBlock{*block}, map[string]any{"image_key": imageKey}, nil
+
+	default:
+		return "", nil, nil, nil
+	}
+}
+
+func (f *FeishuChannel) buildFeishuImageContentBlock(ctx context.Context, imageKey string) (*model.ContentBlock, error) {
+	if f.client == nil {
+		return nil, fmt.Errorf("feishu client not initialized")
+	}
+
+	tenantAccessToken, err := f.client.GetTenantAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant access token: %w", err)
+	}
+
+	downloader := f.imageDownloader
+	if downloader == nil {
+		downloader = downloadFeishuImageAsBase64
+	}
+
+	base64Data, mediaType, err := downloader(ctx, tenantAccessToken, imageKey)
+	if err != nil {
+		return &model.ContentBlock{
+			Type: model.ContentBlockImage,
+			URL:  buildFeishuImageDownloadURL(imageKey),
+		}, fmt.Errorf("download image %q: %w", imageKey, err)
+	}
+
+	return &model.ContentBlock{
+		Type:      model.ContentBlockImage,
+		MediaType: mediaType,
+		Data:      base64Data,
+	}, nil
+}
+
+func buildFeishuImageDownloadURL(imageKey string) string {
+	return fmt.Sprintf("https://open.feishu.cn/open-apis/im/v1/images/%s?image_type=message", url.PathEscape(strings.TrimSpace(imageKey)))
+}
+
+func downloadFeishuImageAsBase64(ctx context.Context, tenantAccessToken, imageKey string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, buildFeishuImageDownloadURL(imageKey), nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create image request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tenantAccessToken)
+
+	httpClient := &http.Client{Timeout: feishuInboundImageTimeout}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("request image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, feishuInboundImageMaxBytes+1))
+	if err != nil {
+		return "", "", fmt.Errorf("read image response: %w", err)
+	}
+	if int64(len(body)) > feishuInboundImageMaxBytes {
+		return "", "", fmt.Errorf("image exceeds %d bytes", feishuInboundImageMaxBytes)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("image request failed with status %d", resp.StatusCode)
+	}
+
+	mediaType := normalizeFeishuMediaType(resp.Header.Get("Content-Type"))
+	if mediaType == "" {
+		mediaType = http.DetectContentType(body)
+	}
+
+	// TODO: 如遇 image_type=message 不适配的场景，补充根据会话上下文选择下载参数。
+	return base64.StdEncoding.EncodeToString(body), mediaType, nil
+}
+
+func normalizeFeishuMediaType(value string) string {
+	contentType := strings.TrimSpace(value)
+	if contentType == "" {
+		return ""
+	}
+	if idx := strings.Index(contentType, ";"); idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.TrimSpace(contentType)
 }

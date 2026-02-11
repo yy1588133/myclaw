@@ -23,12 +23,17 @@ const (
 )
 
 type Config struct {
-	Agent    AgentConfig    `json:"agent"`
-	Channels ChannelsConfig `json:"channels"`
-	Provider ProviderConfig `json:"provider"`
-	Tools    ToolsConfig    `json:"tools"`
-	Gateway  GatewayConfig  `json:"gateway"`
-	Memory   MemoryConfig   `json:"memory"`
+	Agent         AgentConfig         `json:"agent"`
+	Channels      ChannelsConfig      `json:"channels"`
+	Provider      ProviderConfig      `json:"provider"`
+	Tools         ToolsConfig         `json:"tools"`
+	Skills        SkillsConfig        `json:"skills"`
+	Hooks         HooksConfig         `json:"hooks"`
+	MCP           MCPConfig           `json:"mcp"`
+	AutoCompact   AutoCompactConfig   `json:"autoCompact"`
+	TokenTracking TokenTrackingConfig `json:"tokenTracking"`
+	Gateway       GatewayConfig       `json:"gateway"`
+	Memory        MemoryConfig        `json:"memory"`
 }
 
 type MemoryConfig struct {
@@ -63,6 +68,9 @@ type ProviderConfig struct {
 type ChannelsConfig struct {
 	Telegram TelegramConfig `json:"telegram"`
 	Feishu   FeishuConfig   `json:"feishu"`
+	WeCom    WeComConfig    `json:"wecom"`
+	WhatsApp WhatsAppConfig `json:"whatsapp"`
+	WebUI    WebUIConfig    `json:"webui"`
 }
 
 type TelegramConfig struct {
@@ -82,6 +90,15 @@ type FeishuConfig struct {
 	AllowFrom         []string `json:"allowFrom"`
 }
 
+type WeComConfig struct {
+	Enabled        bool     `json:"enabled"`
+	Token          string   `json:"token"`
+	EncodingAESKey string   `json:"encodingAESKey"`
+	ReceiveID      string   `json:"receiveId,omitempty"`
+	Port           int      `json:"port,omitempty"`
+	AllowFrom      []string `json:"allowFrom"`
+}
+
 type ToolsConfig struct {
 	BraveAPIKey         string `json:"braveApiKey,omitempty"`
 	ExecTimeout         int    `json:"execTimeout"`
@@ -91,6 +108,49 @@ type ToolsConfig struct {
 type GatewayConfig struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
+}
+
+type SkillsConfig struct {
+	Enabled bool   `json:"enabled"`
+	Dir     string `json:"dir,omitempty"` // 默认 workspace/skills
+}
+
+type HooksConfig struct {
+	PreToolUse  []HookEntry `json:"preToolUse,omitempty"`
+	PostToolUse []HookEntry `json:"postToolUse,omitempty"`
+	Stop        []HookEntry `json:"stop,omitempty"`
+}
+
+type HookEntry struct {
+	Command string `json:"command"`
+	Pattern string `json:"pattern,omitempty"` // tool name regex
+	Timeout int    `json:"timeout,omitempty"` // seconds
+}
+
+type MCPConfig struct {
+	Servers []string `json:"servers,omitempty"`
+}
+
+type WhatsAppConfig struct {
+	Enabled   bool     `json:"enabled"`
+	JID       string   `json:"jid,omitempty"`
+	StorePath string   `json:"storePath,omitempty"`
+	AllowFrom []string `json:"allowFrom,omitempty"`
+}
+
+type WebUIConfig struct {
+	Enabled   bool     `json:"enabled"`
+	AllowFrom []string `json:"allowFrom,omitempty"`
+}
+
+type AutoCompactConfig struct {
+	Enabled       bool    `json:"enabled"`
+	Threshold     float64 `json:"threshold,omitempty"`
+	PreserveCount int     `json:"preserveCount,omitempty"`
+}
+
+type TokenTrackingConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 func DefaultConfig() *Config {
@@ -109,6 +169,14 @@ func DefaultConfig() *Config {
 			ExecTimeout:         DefaultExecTimeout,
 			RestrictToWorkspace: true,
 		},
+		Skills: SkillsConfig{
+			Enabled: true,
+		},
+		AutoCompact: AutoCompactConfig{
+			Enabled:       true,
+			Threshold:     0.8,
+			PreserveCount: 5,
+		},
 		Gateway: GatewayConfig{
 			Host: DefaultHost,
 			Port: DefaultPort,
@@ -125,10 +193,7 @@ func DefaultConfig() *Config {
 }
 
 func ConfigDir() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home, _ = os.UserHomeDir()
-	}
+	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".myclaw")
 }
 
@@ -180,6 +245,15 @@ func LoadConfig() (*Config, error) {
 	}
 	if appSecret := os.Getenv("MYCLAW_FEISHU_APP_SECRET"); appSecret != "" {
 		cfg.Channels.Feishu.AppSecret = appSecret
+	}
+	if token := os.Getenv("MYCLAW_WECOM_TOKEN"); token != "" {
+		cfg.Channels.WeCom.Token = token
+	}
+	if aesKey := os.Getenv("MYCLAW_WECOM_ENCODING_AES_KEY"); aesKey != "" {
+		cfg.Channels.WeCom.EncodingAESKey = aesKey
+	}
+	if receiveID := os.Getenv("MYCLAW_WECOM_RECEIVE_ID"); receiveID != "" {
+		cfg.Channels.WeCom.ReceiveID = receiveID
 	}
 	if enabled := os.Getenv("MYCLAW_MEMORY_ENABLED"); enabled != "" {
 		if parsed, err := strconv.ParseBool(enabled); err == nil {

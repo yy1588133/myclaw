@@ -33,6 +33,18 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Tools.RestrictToWorkspace {
 		t.Error("restrictToWorkspace should be true by default")
 	}
+	if !cfg.Skills.Enabled {
+		t.Error("skills.enabled should be true by default")
+	}
+	if !cfg.AutoCompact.Enabled {
+		t.Error("autoCompact.enabled should be true by default")
+	}
+	if cfg.AutoCompact.Threshold != 0.8 {
+		t.Errorf("autoCompact.threshold = %v, want 0.8", cfg.AutoCompact.Threshold)
+	}
+	if cfg.AutoCompact.PreserveCount != 5 {
+		t.Errorf("autoCompact.preserveCount = %d, want 5", cfg.AutoCompact.PreserveCount)
+	}
 	if cfg.Agent.Workspace == "" {
 		t.Error("workspace should not be empty")
 	}
@@ -281,71 +293,28 @@ func TestLoadConfig_MYCLAWBaseURL(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_MemoryDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.Memory.Enabled {
-		t.Fatal("memory should be disabled by default")
-	}
-	if cfg.Memory.Extraction.QuietGap != DefaultMemoryQuietGap {
-		t.Fatalf("quietGap = %q, want %q", cfg.Memory.Extraction.QuietGap, DefaultMemoryQuietGap)
-	}
-	if cfg.Memory.Extraction.TokenBudget != DefaultMemoryTokenBudget {
-		t.Fatalf("tokenBudget = %v, want %v", cfg.Memory.Extraction.TokenBudget, DefaultMemoryTokenBudget)
-	}
-	if cfg.Memory.Extraction.DailyFlush != DefaultMemoryDailyFlush {
-		t.Fatalf("dailyFlush = %q, want %q", cfg.Memory.Extraction.DailyFlush, DefaultMemoryDailyFlush)
-	}
-}
-
-func TestLoadConfig_MemoryEnvOverrides(t *testing.T) {
+func TestLoadConfig_WeComEnvOverrides(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
-	t.Setenv("MYCLAW_MEMORY_ENABLED", "true")
-	t.Setenv("MYCLAW_MEMORY_MODEL", "gpt-5-mini")
-	t.Setenv("MYCLAW_MEMORY_API_KEY", "mem-key")
-	t.Setenv("MYCLAW_MEMORY_BASE_URL", "https://example.com/v1")
-	t.Setenv("MYCLAW_MEMORY_DB_PATH", "/tmp/memory.db")
-	t.Setenv("MYCLAW_MEMORY_MAX_TOKENS", "4096")
-	t.Setenv("MYCLAW_MEMORY_QUIET_GAP", "4m")
-	t.Setenv("MYCLAW_MEMORY_TOKEN_BUDGET", "0.7")
-	t.Setenv("MYCLAW_MEMORY_DAILY_FLUSH", "02:30")
+	t.Setenv("MYCLAW_WECOM_TOKEN", "wecom-token")
+	t.Setenv("MYCLAW_WECOM_ENCODING_AES_KEY", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")
+	t.Setenv("MYCLAW_WECOM_RECEIVE_ID", "wecom-receive-id")
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig error: %v", err)
 	}
 
-	if !cfg.Memory.Enabled {
-		t.Fatal("memory enabled override not applied")
+	if cfg.Channels.WeCom.Token != "wecom-token" {
+		t.Errorf("wecom token = %q, want wecom-token", cfg.Channels.WeCom.Token)
 	}
-	if cfg.Memory.Model != "gpt-5-mini" {
-		t.Fatalf("memory model = %q", cfg.Memory.Model)
+	if cfg.Channels.WeCom.EncodingAESKey != "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG" {
+		t.Errorf("wecom aes key = %q, want configured value", cfg.Channels.WeCom.EncodingAESKey)
 	}
-	if cfg.Memory.Provider == nil {
-		t.Fatal("memory provider should be initialized")
-	}
-	if cfg.Memory.Provider.APIKey != "mem-key" {
-		t.Fatalf("memory api key = %q", cfg.Memory.Provider.APIKey)
-	}
-	if cfg.Memory.Provider.BaseURL != "https://example.com/v1" {
-		t.Fatalf("memory base url = %q", cfg.Memory.Provider.BaseURL)
-	}
-	if cfg.Memory.DBPath != "/tmp/memory.db" {
-		t.Fatalf("memory db path = %q", cfg.Memory.DBPath)
-	}
-	if cfg.Memory.MaxTokens != 4096 {
-		t.Fatalf("memory max tokens = %d", cfg.Memory.MaxTokens)
-	}
-	if cfg.Memory.Extraction.QuietGap != "4m" {
-		t.Fatalf("quietGap = %q", cfg.Memory.Extraction.QuietGap)
-	}
-	if cfg.Memory.Extraction.TokenBudget != 0.7 {
-		t.Fatalf("tokenBudget = %v", cfg.Memory.Extraction.TokenBudget)
-	}
-	if cfg.Memory.Extraction.DailyFlush != "02:30" {
-		t.Fatalf("dailyFlush = %q", cfg.Memory.Extraction.DailyFlush)
+	if cfg.Channels.WeCom.ReceiveID != "wecom-receive-id" {
+		t.Errorf("wecom receiveId = %q, want wecom-receive-id", cfg.Channels.WeCom.ReceiveID)
 	}
 }

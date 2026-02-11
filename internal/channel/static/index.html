@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>myclaw</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-secondary: #f7f7f8;
+  --text: #1a1a1a;
+  --text-secondary: #6b6b6b;
+  --border: #e5e5e5;
+  --user-bg: #2563eb;
+  --user-text: #ffffff;
+  --bot-bg: #f0f0f0;
+  --bot-text: #1a1a1a;
+  --input-bg: #ffffff;
+  --shadow: rgba(0,0,0,0.08);
+  --code-bg: #f4f4f5;
+  --accent: #2563eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a1a;
+    --bg-secondary: #262626;
+    --text: #e5e5e5;
+    --text-secondary: #a3a3a3;
+    --border: #333333;
+    --user-bg: #2563eb;
+    --user-text: #ffffff;
+    --bot-bg: #2a2a2a;
+    --bot-text: #e5e5e5;
+    --input-bg: #262626;
+    --shadow: rgba(0,0,0,0.3);
+    --code-bg: #2a2a2a;
+    --accent: #3b82f6;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  max-width: 800px;
+  margin: 0 auto;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+header h1 {
+  font-size: 18px;
+  font-weight: 600;
+}
+#status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  transition: background 0.3s;
+}
+#status-dot.connected { background: #22c55e; }
+#status-dot.connecting { background: #f59e0b; }
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  -webkit-overflow-scrolling: touch;
+}
+.msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.msg.user {
+  align-self: flex-end;
+  background: var(--user-bg);
+  color: var(--user-text);
+  border-bottom-right-radius: 4px;
+}
+.msg.bot {
+  align-self: flex-start;
+  background: var(--bot-bg);
+  color: var(--bot-text);
+  border-bottom-left-radius: 4px;
+}
+.msg .time {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 4px;
+}
+.msg.user .time { text-align: right; }
+.msg pre {
+  background: var(--code-bg);
+  padding: 8px 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 6px 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.msg.user pre { background: rgba(0,0,0,0.15); }
+.msg code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.msg.user code { background: rgba(0,0,0,0.15); }
+.msg a { color: var(--accent); text-decoration: underline; }
+.msg.user a { color: #93c5fd; }
+.typing {
+  align-self: flex-start;
+  padding: 10px 14px;
+  background: var(--bot-bg);
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+  display: none;
+  margin: 0 16px;
+}
+.typing span {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  margin: 0 2px;
+  animation: bounce 1.4s infinite;
+}
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-6px); }
+}
+#input-area {
+  padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+#input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 10px 16px;
+  font-size: 15px;
+  background: var(--input-bg);
+  color: var(--text);
+  resize: none;
+  max-height: 120px;
+  line-height: 1.4;
+  font-family: inherit;
+  outline: none;
+}
+#input:focus { border-color: var(--accent); }
+#send-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+#send-btn:disabled { opacity: 0.4; cursor: default; }
+#send-btn svg { width: 20px; height: 20px; }
+.welcome {
+  text-align: center;
+  color: var(--text-secondary);
+  margin: auto;
+  padding: 40px 20px;
+}
+.welcome h2 { font-size: 24px; margin-bottom: 8px; color: var(--text); }
+.welcome p { font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>myclaw</h1>
+    <div id="status">
+      <div id="status-dot"></div>
+      <span id="status-text">Disconnected</span>
+    </div>
+  </header>
+  <div id="messages">
+    <div class="welcome" id="welcome">
+      <h2>myclaw</h2>
+      <p>Personal AI Assistant</p>
+    </div>
+  </div>
+  <div class="typing" id="typing">
+    <span></span><span></span><span></span>
+  </div>
+  <div id="input-area">
+    <textarea id="input" rows="1" placeholder="Type a message..." autocomplete="off"></textarea>
+    <button id="send-btn" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"></line>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+      </svg>
+    </button>
+  </div>
+</div>
+<script>
+(function() {
+  var messagesEl = document.getElementById('messages');
+  var welcomeEl = document.getElementById('welcome');
+  var typingEl = document.getElementById('typing');
+  var inputEl = document.getElementById('input');
+  var sendBtn = document.getElementById('send-btn');
+  var statusDot = document.getElementById('status-dot');
+  var statusText = document.getElementById('status-text');
+
+  var ws = null;
+  var reconnectTimer = null;
+  var reconnectDelay = 1000;
+
+  function setStatus(state, text) {
+    statusDot.className = state;
+    statusText.textContent = text;
+    sendBtn.disabled = state !== 'connected' || !inputEl.value.trim();
+  }
+
+  function connect() {
+    if (ws && ws.readyState <= 1) return;
+    setStatus('connecting', 'Connecting...');
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = function() {
+      setStatus('connected', 'Connected');
+      reconnectDelay = 1000;
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        var data = JSON.parse(e.data);
+        if (data.type === 'message') {
+          hideTyping();
+          addMessage(data.content, 'bot');
+        } else if (data.type === 'typing') {
+          showTyping();
+        }
+      } catch(err) {
+        hideTyping();
+        addMessage(e.data, 'bot');
+      }
+    };
+
+    ws.onclose = function() {
+      setStatus('', 'Disconnected');
+      hideTyping();
+      scheduleReconnect();
+    };
+
+    ws.onerror = function() {
+      ws.close();
+    };
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function() {
+      reconnectTimer = null;
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      connect();
+    }, reconnectDelay);
+  }
+
+  function send() {
+    var text = inputEl.value.trim();
+    if (!text || !ws || ws.readyState !== 1) return;
+    addMessage(text, 'user');
+    ws.send(JSON.stringify({ type: 'message', content: text }));
+    inputEl.value = '';
+    autoResize();
+    sendBtn.disabled = true;
+    showTyping();
+  }
+
+  function addMessage(content, role) {
+    if (welcomeEl) welcomeEl.style.display = 'none';
+    var div = document.createElement('div');
+    div.className = 'msg ' + role;
+    var bodyDiv = document.createElement('div');
+    bodyDiv.innerHTML = role === 'bot' ? renderMarkdown(content) : escapeHtml(content).replace(/\n/g, '<br>');
+    div.appendChild(bodyDiv);
+    var timeDiv = document.createElement('div');
+    timeDiv.className = 'time';
+    timeDiv.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    div.appendChild(timeDiv);
+    messagesEl.appendChild(div);
+    scrollToBottom();
+  }
+
+  function showTyping() { typingEl.style.display = 'block'; scrollToBottom(); }
+  function hideTyping() { typingEl.style.display = 'none'; }
+
+  function scrollToBottom() {
+    requestAnimationFrame(function() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderMarkdown(s) {
+    s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+      return '<pre><code>' + escapeHtml(code.trim()) + '</code></pre>';
+    });
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    s = s.replace(/\*(.+?)\*/g, '<i>$1</i>');
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    s = s.replace(/\n/g, '<br>');
+    return s;
+  }
+
+  function autoResize() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  }
+
+  inputEl.addEventListener('input', function() {
+    autoResize();
+    sendBtn.disabled = !inputEl.value.trim() || !ws || ws.readyState !== 1;
+  });
+
+  inputEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  sendBtn.addEventListener('click', send);
+
+  connect();
+})();
+</script>
+</body>
+</html>

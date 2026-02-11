@@ -1,15 +1,22 @@
 package channel
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/cexll/agentsdk-go/pkg/model"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/config"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func TestBaseChannel_Name(t *testing.T) {
@@ -207,12 +214,12 @@ func TestChannelManager_StopAll_Empty(t *testing.T) {
 
 // mockChannel implements Channel interface for testing
 type mockChannel struct {
-	name       string
-	started    bool
-	stopped    bool
-	startErr   error
-	stopErr    error
-	sentMsgs   []bus.OutboundMessage
+	name     string
+	started  bool
+	stopped  bool
+	startErr error
+	stopErr  error
+	sentMsgs []bus.OutboundMessage
 }
 
 func (m *mockChannel) Name() string { return m.name }
@@ -408,18 +415,259 @@ func TestTelegramChannel_HandleMessage_Caption(t *testing.T) {
 	}
 }
 
+func TestTelegramChannel_HandleMessage_Photo(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	ch, _ := NewTelegramChannel(config.TelegramConfig{Token: "fake-token"}, b)
+	mockBot := newMockBot()
+	mockBot.files["photo-large"] = tgbotapi.File{FileID: "photo-large", FilePath: "photos/large.jpg"}
+	ch.SetBot(mockBot)
+
+	photoData := []byte{0xff, 0xd8, 0xff, 0xd9}
+	ch.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(photoData)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	msg := &tgbotapi.Message{
+		From:    &tgbotapi.User{ID: 123},
+		Chat:    &tgbotapi.Chat{ID: 456},
+		Caption: "photo caption",
+		Photo: []tgbotapi.PhotoSize{
+			{FileID: "photo-small"},
+			{FileID: "photo-large"},
+		},
+	}
+
+	ch.handleMessage(msg)
+
+	select {
+	case inbound := <-b.Inbound:
+		if inbound.Content != "photo caption" {
+			t.Errorf("content = %q, want 'photo caption'", inbound.Content)
+		}
+		if len(inbound.ContentBlocks) != 1 {
+			t.Fatalf("content blocks len = %d, want 1", len(inbound.ContentBlocks))
+		}
+		block := inbound.ContentBlocks[0]
+		if block.Type != model.ContentBlockImage {
+			t.Errorf("content block type = %q, want %q", block.Type, model.ContentBlockImage)
+		}
+		if block.MediaType != "image/jpeg" {
+			t.Errorf("content block media type = %q, want image/jpeg", block.MediaType)
+		}
+		if block.Data != base64.StdEncoding.EncodeToString(photoData) {
+			t.Errorf("content block data mismatch")
+		}
+	default:
+		t.Error("expected inbound message")
+	}
+}
+
+func TestTelegramChannel_HandleMessage_PhotoWithCaption(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	ch, _ := NewTelegramChannel(config.TelegramConfig{Token: "fake-token"}, b)
+	mockBot := newMockBot()
+	mockBot.files["photo-large"] = tgbotapi.File{FileID: "photo-large", FilePath: "photos/large.jpg"}
+	ch.SetBot(mockBot)
+
+	photoData := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00}
+	downloadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/botfake-token/photos/large.jpg" {
+			t.Fatalf("download path = %q, want /file/botfake-token/photos/large.jpg", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(photoData)
+	}))
+	defer downloadServer.Close()
+
+	serverURL, err := url.Parse(downloadServer.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	ch.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		clonedReq := req.Clone(req.Context())
+		clonedReq.URL.Scheme = serverURL.Scheme
+		clonedReq.URL.Host = serverURL.Host
+		return transport.RoundTrip(clonedReq)
+	})}
+
+	msg := &tgbotapi.Message{
+		From:    &tgbotapi.User{ID: 123},
+		Chat:    &tgbotapi.Chat{ID: 456},
+		Caption: "photo caption via server",
+		Photo: []tgbotapi.PhotoSize{
+			{FileID: "photo-small"},
+			{FileID: "photo-large"},
+		},
+	}
+
+	ch.handleMessage(msg)
+
+	select {
+	case inbound := <-b.Inbound:
+		if inbound.Content != "photo caption via server" {
+			t.Errorf("content = %q, want 'photo caption via server'", inbound.Content)
+		}
+		if len(inbound.ContentBlocks) != 1 {
+			t.Fatalf("content blocks len = %d, want 1", len(inbound.ContentBlocks))
+		}
+		block := inbound.ContentBlocks[0]
+		if block.Type != model.ContentBlockImage {
+			t.Errorf("content block type = %q, want %q", block.Type, model.ContentBlockImage)
+		}
+		if block.MediaType != "image/png" {
+			t.Errorf("content block media type = %q, want image/png", block.MediaType)
+		}
+		if block.Data != base64.StdEncoding.EncodeToString(photoData) {
+			t.Errorf("content block data mismatch")
+		}
+	case <-time.After(time.Second):
+		t.Error("expected inbound message")
+	}
+}
+
+func TestWeComCallback_ImageMessage(t *testing.T) {
+	imageData := []byte{0xff, 0xd8, 0xff, 0xd9}
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/image.jpg" {
+			t.Fatalf("image path = %q, want /image.jpg", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(imageData)
+	}))
+	defer imageServer.Close()
+
+	ch, b := newTestWeComChannel(t, config.WeComConfig{
+		Token:          "verify-token",
+		EncodingAESKey: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+		ReceiveID:      "recv-id-1",
+		AllowFrom:      []string{"zhangsan"},
+	})
+
+	timestamp := "1739000200"
+	nonce := "nonce-image"
+	imageURL := imageServer.URL + "/image.jpg"
+	plaintext := fmt.Sprintf(`{"msgid":"20001","aibotid":"AIBOTID","chattype":"single","from":{"userid":"zhangsan"},"response_url":"https://example.com/resp","msgtype":"image","image":{"url":"%s"}}`, imageURL)
+	encrypt := testWeComEncrypt(t, ch.cfg.EncodingAESKey, ch.receiveID, plaintext)
+	signature := testWeComSignature(ch.cfg.Token, timestamp, nonce, encrypt)
+	body := testWeComEncryptedRequestBody(t, encrypt)
+
+	req := httptest.NewRequest(http.MethodPost, "/wecom/bot", strings.NewReader(body))
+	q := req.URL.Query()
+	q.Set("msg_signature", signature)
+	q.Set("timestamp", timestamp)
+	q.Set("nonce", nonce)
+	req.URL.RawQuery = q.Encode()
+	w := httptest.NewRecorder()
+
+	ch.handleCallback(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	select {
+	case inbound := <-b.Inbound:
+		if inbound.Content != "[image]" {
+			t.Errorf("content = %q, want [image]", inbound.Content)
+		}
+		if len(inbound.ContentBlocks) != 1 {
+			t.Fatalf("content blocks len = %d, want 1", len(inbound.ContentBlocks))
+		}
+		block := inbound.ContentBlocks[0]
+		if block.Type != model.ContentBlockImage {
+			t.Errorf("content block type = %q, want %q", block.Type, model.ContentBlockImage)
+		}
+		if block.MediaType != "image/jpeg" {
+			t.Errorf("content block media type = %q, want image/jpeg", block.MediaType)
+		}
+		if block.Data != base64.StdEncoding.EncodeToString(imageData) {
+			t.Errorf("content block data mismatch")
+		}
+		if inbound.Metadata["image_url"] != imageURL {
+			t.Errorf("metadata image_url = %v, want %s", inbound.Metadata["image_url"], imageURL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected inbound message")
+	}
+}
+
+func TestTelegramChannel_HandleMessage_Document(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	ch, _ := NewTelegramChannel(config.TelegramConfig{Token: "fake-token"}, b)
+	mockBot := newMockBot()
+	mockBot.files["doc-1"] = tgbotapi.File{FileID: "doc-1", FilePath: "docs/file.pdf"}
+	ch.SetBot(mockBot)
+
+	pdfData := []byte("%PDF-1.4\n")
+	ch.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(pdfData)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	msg := &tgbotapi.Message{
+		From: &tgbotapi.User{ID: 123},
+		Chat: &tgbotapi.Chat{ID: 456},
+		Document: &tgbotapi.Document{
+			FileID:   "doc-1",
+			MimeType: "application/pdf",
+		},
+	}
+
+	ch.handleMessage(msg)
+
+	select {
+	case inbound := <-b.Inbound:
+		if inbound.Content != "" {
+			t.Errorf("content = %q, want empty", inbound.Content)
+		}
+		if len(inbound.ContentBlocks) != 1 {
+			t.Fatalf("content blocks len = %d, want 1", len(inbound.ContentBlocks))
+		}
+		block := inbound.ContentBlocks[0]
+		if block.Type != model.ContentBlockDocument {
+			t.Errorf("content block type = %q, want %q", block.Type, model.ContentBlockDocument)
+		}
+		if block.MediaType != "application/pdf" {
+			t.Errorf("content block media type = %q, want application/pdf", block.MediaType)
+		}
+		if block.Data != base64.StdEncoding.EncodeToString(pdfData) {
+			t.Errorf("content block data mismatch")
+		}
+	default:
+		t.Error("expected inbound message")
+	}
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 // mockTelegramBot implements TelegramBot interface for testing
 type mockTelegramBot struct {
 	updatesChan chan tgbotapi.Update
 	stopped     bool
 	sentMsgs    []tgbotapi.Chattable
 	sendErr     error
+	getFileErr  error
+	files       map[string]tgbotapi.File
 	self        tgbotapi.User
 }
 
 func newMockBot() *mockTelegramBot {
 	return &mockTelegramBot{
 		updatesChan: make(chan tgbotapi.Update, 10),
+		files:       make(map[string]tgbotapi.File),
 		self:        tgbotapi.User{UserName: "testbot"},
 	}
 }
@@ -442,6 +690,17 @@ func (m *mockTelegramBot) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 
 func (m *mockTelegramBot) GetSelf() tgbotapi.User {
 	return m.self
+}
+
+func (m *mockTelegramBot) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error) {
+	if m.getFileErr != nil {
+		return tgbotapi.File{}, m.getFileErr
+	}
+	file, ok := m.files[config.FileID]
+	if !ok {
+		return tgbotapi.File{}, fmt.Errorf("file %q not found", config.FileID)
+	}
+	return file, nil
 }
 
 func TestTelegramChannel_InitBot_Success(t *testing.T) {
@@ -693,6 +952,10 @@ func (s *sendCountingBot) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 
 func (s *sendCountingBot) GetSelf() tgbotapi.User {
 	return s.mockBot.self
+}
+
+func (s *sendCountingBot) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error) {
+	return s.mockBot.GetFile(config)
 }
 
 func TestTelegramChannel_Send_BothFail(t *testing.T) {

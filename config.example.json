@@ -26,6 +26,22 @@
       "encryptKey": "",
       "port": 9876,
       "allowFrom": []
+    },
+    "wecom": {
+      "enabled": false,
+      "token": "",
+      "encodingAESKey": "",
+      "receiveId": "",
+      "port": 9886,
+      "allowFrom": []
+    },
+    "whatsapp": {
+      "enabled": false,
+      "allowFrom": []
+    },
+    "webui": {
+      "enabled": false,
+      "allowFrom": []
     }
   },
   "tools": {

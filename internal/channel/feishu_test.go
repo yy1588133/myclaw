@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/stellarlinkco/myclaw/internal/bus"
 	"github.com/stellarlinkco/myclaw/internal/config"
 )
@@ -143,6 +144,9 @@ func newTestFeishuChannel(t *testing.T, cfg config.FeishuConfig) (*FeishuChannel
 		t.Fatalf("NewFeishuChannelWithFactory error: %v", err)
 	}
 	ch.client = mock
+	ch.imageDownloader = func(ctx context.Context, tenantAccessToken, imageKey string) (string, string, error) {
+		return "", "", fmt.Errorf("test image downloader not configured")
+	}
 	return ch, b
 }
 
@@ -326,10 +330,19 @@ func TestFeishuWebhook_RejectedSender(t *testing.T) {
 	}
 }
 
-func TestFeishuWebhook_NonTextMessage(t *testing.T) {
+func TestFeishuWebhook_ImageMessage(t *testing.T) {
 	ch, b := newTestFeishuChannel(t, config.FeishuConfig{
 		AppID: "cli_test", AppSecret: "secret",
 	})
+	ch.imageDownloader = func(ctx context.Context, tenantAccessToken, imageKey string) (string, string, error) {
+		if tenantAccessToken != "test-token" {
+			t.Fatalf("tenantAccessToken = %q, want test-token", tenantAccessToken)
+		}
+		if imageKey != "img_xxx" {
+			t.Fatalf("imageKey = %q, want img_xxx", imageKey)
+		}
+		return "iVBORw0KGgo=", "image/png", nil
+	}
 
 	event := map[string]interface{}{
 		"header": map[string]interface{}{
@@ -356,8 +369,63 @@ func TestFeishuWebhook_NonTextMessage(t *testing.T) {
 	ch.handleWebhook(w, req)
 
 	select {
+	case msg := <-b.Inbound:
+		if msg.Content != "[image]" {
+			t.Errorf("content = %q, want [image]", msg.Content)
+		}
+		if len(msg.ContentBlocks) != 1 {
+			t.Fatalf("content blocks len = %d, want 1", len(msg.ContentBlocks))
+		}
+		block := msg.ContentBlocks[0]
+		if block.Type != model.ContentBlockImage {
+			t.Errorf("content block type = %q, want %q", block.Type, model.ContentBlockImage)
+		}
+		if block.MediaType != "image/png" {
+			t.Errorf("media type = %q, want image/png", block.MediaType)
+		}
+		if block.Data != "iVBORw0KGgo=" {
+			t.Errorf("data = %q, want iVBORw0KGgo=", block.Data)
+		}
+		if got := msg.Metadata["image_key"]; got != "img_xxx" {
+			t.Errorf("metadata image_key = %v, want img_xxx", got)
+		}
+	default:
+		t.Error("should receive image message")
+	}
+}
+
+func TestFeishuWebhook_UnsupportedMessageType(t *testing.T) {
+	ch, b := newTestFeishuChannel(t, config.FeishuConfig{
+		AppID: "cli_test", AppSecret: "secret",
+	})
+
+	event := map[string]interface{}{
+		"header": map[string]interface{}{
+			"event_type": "im.message.receive_v1",
+		},
+		"event": map[string]interface{}{
+			"sender": map[string]interface{}{
+				"sender_id": map[string]interface{}{
+					"open_id": "ou_test",
+				},
+			},
+			"message": map[string]interface{}{
+				"chat_id":      "oc_chat",
+				"message_type": "post",
+				"content":      `{}`,
+			},
+		},
+	}
+	data, _ := json.Marshal(event)
+
+	req := httptest.NewRequest(http.MethodPost, "/feishu/webhook", strings.NewReader(string(data)))
+	w := httptest.NewRecorder()
+
+	ch.handleWebhook(w, req)
+
+	select {
 	case <-b.Inbound:
-		t.Error("should not receive non-text message")
+		t.Error("should not receive unsupported message type")
 	default:
 		// OK
 	}

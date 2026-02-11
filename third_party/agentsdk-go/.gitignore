@@ -1,0 +1,43 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build artifacts
+*.test
+*.out
+
+# Go module caches
+vendor/
+
+# IDE/editor noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+.env
+
+basic
+
+# Example binaries
+examples/cli/cli
+examples/mcp/mcp
+examples/http/http
+
+# Global Claude artefacts (left ignored), but keep the HTTP example's tracked config
+.claude
+.claude-trace
+!examples/http/.claude/
+!examples/http/.claude/settings.json
+!examples/05-embed/.claude/
+!examples/05-embed/.claude/settings.json
+
+tools.json
+.gocache
+.gomodcache
+.swe-agent
+.trace
+trace-out/

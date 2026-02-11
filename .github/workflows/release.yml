@@ -2,15 +2,37 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  guard-main-tag:
+    name: guard-main-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag points to main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{commit}")"
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "Tag ${GITHUB_REF_NAME} does not point to a commit in origin/main history." >&2
+            echo "Only tags from main are allowed to publish releases." >&2
+            exit 1
+          fi
+
   github-release:
     runs-on: ubuntu-latest
+    needs: guard-main-tag
     permissions:
       contents: write
     steps:
@@ -19,42 +41,118 @@ jobs:
           fetch-depth: 0
 
       - name: Generate Release Notes
-        id: release_notes
+        shell: bash
         run: |
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -n 1)
-
+          set -euo pipefail
+          PREVIOUS_TAG="$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n 1 || true)"
           if [ -z "$PREVIOUS_TAG" ]; then
-            echo "No previous tag found, using all commits"
-            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+            COMMITS="$(git log --pretty=format:"- %s (%h)" --no-merges)"
+            CHANGELOG_LINE="First tagged release"
           else
-            echo "Generating notes from $PREVIOUS_TAG to ${{ github.ref_name }}"
-            COMMITS=$(git log ${PREVIOUS_TAG}..${{ github.ref_name }} --pretty=format:"- %s (%h)" --no-merges)
+            COMMITS="$(git log "${PREVIOUS_TAG}".."${GITHUB_REF_NAME}" --pretty=format:"- %s (%h)" --no-merges)"
+            CHANGELOG_LINE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${GITHUB_REF_NAME}"
           fi
-
           cat > release_notes.md <<EOF
           ## What's Changed
 
           ${COMMITS}
 
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${{ github.ref_name }}
+          ${CHANGELOG_LINE}
           EOF
 
-          cat release_notes.md
-
-      - name: Create Release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "${{ github.ref_name }}" \
-            --notes-file release_notes.md
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release_notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release_notes.md
+          fi
+
+  build-binaries:
+    name: build-${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs: guard-main-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          EXT=""
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            EXT=".exe"
+          fi
+          OUT="dist/myclaw_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}"
+          CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" go build -trimpath -ldflags="-s -w" -o "$OUT" ./cmd/myclaw
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: myclaw-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/myclaw_*
+          if-no-files-found: error
+
+  upload-binaries:
+    name: upload-binaries
+    runs-on: ubuntu-latest
+    needs: [github-release, build-binaries]
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum myclaw_* > checksums.txt
+
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
 
   docker:
     runs-on: ubuntu-latest
+    needs: guard-main-tag
     permissions:
       contents: read
       packages: write
-
     steps:
       - uses: actions/checkout@v4
 

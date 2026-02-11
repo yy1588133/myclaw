@@ -36,5 +36,17 @@
   "gateway": {
     "host": "0.0.0.0",
     "port": 18790
+  },
+  "memory": {
+    "enabled": false,
+    "model": "",
+    "maxTokens": 8192,
+    "dbPath": "",
+    "provider": null,
+    "extraction": {
+      "quietGap": "3m",
+      "tokenBudget": 0.6,
+      "dailyFlush": "03:00"
+    }
   }
 }

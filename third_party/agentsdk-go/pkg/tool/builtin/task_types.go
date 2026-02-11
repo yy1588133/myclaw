@@ -28,4 +28,3 @@ func normalizeTaskStatus(value string) string {
 		return ""
 	}
 }
-

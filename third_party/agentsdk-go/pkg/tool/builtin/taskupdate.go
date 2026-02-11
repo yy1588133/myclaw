@@ -502,4 +502,3 @@ func formatTaskUpdateOutput(task tasks.Task, unblocked []string, revision uint64
 	fmt.Fprintf(&b, "revision: %d", revision)
 	return b.String()
 }
-

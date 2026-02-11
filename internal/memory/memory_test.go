@@ -219,17 +219,19 @@ func TestGetRecentMemories_NoLimit(t *testing.T) {
 }
 
 func TestMemoryDir(t *testing.T) {
-	ms := NewMemoryStore("/test/workspace")
-	expected := "/test/workspace/memory"
+	workspace := filepath.FromSlash("/test/workspace")
+	ms := NewMemoryStore(workspace)
+	expected := filepath.Join(workspace, "memory")
 	if ms.memoryDir() != expected {
 		t.Errorf("memoryDir = %q, want %q", ms.memoryDir(), expected)
 	}
 }
 
 func TestTodayFile(t *testing.T) {
-	ms := NewMemoryStore("/test/workspace")
+	workspace := filepath.FromSlash("/test/workspace")
+	ms := NewMemoryStore(workspace)
 	today := time.Now().Format("2006-01-02")
-	expected := "/test/workspace/memory/" + today + ".md"
+	expected := filepath.Join(workspace, "memory", today+".md")
 	if ms.todayFile() != expected {
 		t.Errorf("todayFile = %q, want %q", ms.todayFile(), expected)
 	}

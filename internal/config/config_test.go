@@ -280,3 +280,72 @@ func TestLoadConfig_MYCLAWBaseURL(t *testing.T) {
 		t.Errorf("baseURL = %q, want http://myclaw.local", cfg.Provider.BaseURL)
 	}
 }
+
+func TestDefaultConfig_MemoryDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Memory.Enabled {
+		t.Fatal("memory should be disabled by default")
+	}
+	if cfg.Memory.Extraction.QuietGap != DefaultMemoryQuietGap {
+		t.Fatalf("quietGap = %q, want %q", cfg.Memory.Extraction.QuietGap, DefaultMemoryQuietGap)
+	}
+	if cfg.Memory.Extraction.TokenBudget != DefaultMemoryTokenBudget {
+		t.Fatalf("tokenBudget = %v, want %v", cfg.Memory.Extraction.TokenBudget, DefaultMemoryTokenBudget)
+	}
+	if cfg.Memory.Extraction.DailyFlush != DefaultMemoryDailyFlush {
+		t.Fatalf("dailyFlush = %q, want %q", cfg.Memory.Extraction.DailyFlush, DefaultMemoryDailyFlush)
+	}
+}
+
+func TestLoadConfig_MemoryEnvOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	t.Setenv("MYCLAW_MEMORY_ENABLED", "true")
+	t.Setenv("MYCLAW_MEMORY_MODEL", "gpt-5-mini")
+	t.Setenv("MYCLAW_MEMORY_API_KEY", "mem-key")
+	t.Setenv("MYCLAW_MEMORY_BASE_URL", "https://example.com/v1")
+	t.Setenv("MYCLAW_MEMORY_DB_PATH", "/tmp/memory.db")
+	t.Setenv("MYCLAW_MEMORY_MAX_TOKENS", "4096")
+	t.Setenv("MYCLAW_MEMORY_QUIET_GAP", "4m")
+	t.Setenv("MYCLAW_MEMORY_TOKEN_BUDGET", "0.7")
+	t.Setenv("MYCLAW_MEMORY_DAILY_FLUSH", "02:30")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if !cfg.Memory.Enabled {
+		t.Fatal("memory enabled override not applied")
+	}
+	if cfg.Memory.Model != "gpt-5-mini" {
+		t.Fatalf("memory model = %q", cfg.Memory.Model)
+	}
+	if cfg.Memory.Provider == nil {
+		t.Fatal("memory provider should be initialized")
+	}
+	if cfg.Memory.Provider.APIKey != "mem-key" {
+		t.Fatalf("memory api key = %q", cfg.Memory.Provider.APIKey)
+	}
+	if cfg.Memory.Provider.BaseURL != "https://example.com/v1" {
+		t.Fatalf("memory base url = %q", cfg.Memory.Provider.BaseURL)
+	}
+	if cfg.Memory.DBPath != "/tmp/memory.db" {
+		t.Fatalf("memory db path = %q", cfg.Memory.DBPath)
+	}
+	if cfg.Memory.MaxTokens != 4096 {
+		t.Fatalf("memory max tokens = %d", cfg.Memory.MaxTokens)
+	}
+	if cfg.Memory.Extraction.QuietGap != "4m" {
+		t.Fatalf("quietGap = %q", cfg.Memory.Extraction.QuietGap)
+	}
+	if cfg.Memory.Extraction.TokenBudget != 0.7 {
+		t.Fatalf("tokenBudget = %v", cfg.Memory.Extraction.TokenBudget)
+	}
+	if cfg.Memory.Extraction.DailyFlush != "02:30" {
+		t.Fatalf("dailyFlush = %q", cfg.Memory.Extraction.DailyFlush)
+	}
+}

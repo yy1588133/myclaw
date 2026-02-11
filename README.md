@@ -12,6 +12,7 @@ Personal AI assistant built on [agentsdk-go](https://github.com/cexll/agentsdk-g
 - **Cron Jobs** - Scheduled tasks with JSON persistence
 - **Heartbeat** - Periodic tasks from HEARTBEAT.md
 - **Memory** - Long-term (MEMORY.md) + daily memories
+- **Tiered Memory (optional)** - SQLite-based tiered memory with retrieval, extraction, and compression
 
 ## Quick Start
 
@@ -178,8 +179,46 @@ When using OpenAI, set the model to an OpenAI model name (e.g., `gpt-4o`).
 | `MYCLAW_TELEGRAM_TOKEN` | Telegram bot token |
 | `MYCLAW_FEISHU_APP_ID` | Feishu app ID |
 | `MYCLAW_FEISHU_APP_SECRET` | Feishu app secret |
+| `MYCLAW_MEMORY_ENABLED` | Enable SQLite memory engine (`true`/`false`) |
+| `MYCLAW_MEMORY_MODEL` | Optional dedicated model for memory tasks |
+| `MYCLAW_MEMORY_API_KEY` | Optional dedicated API key for memory tasks |
+| `MYCLAW_MEMORY_BASE_URL` | Optional dedicated base URL for memory tasks |
+| `MYCLAW_MEMORY_DB_PATH` | Optional absolute DB path (defaults to `~/.myclaw/data/memory.db`) |
+| `MYCLAW_MEMORY_MAX_TOKENS` | Optional max tokens for memory model |
+| `MYCLAW_MEMORY_QUIET_GAP` | Extraction quiet gap (e.g. `3m`) |
+| `MYCLAW_MEMORY_TOKEN_BUDGET` | Extraction token budget ratio (0-1) |
+| `MYCLAW_MEMORY_DAILY_FLUSH` | Daily extraction flush time (`HH:MM`) |
 
 > Prefer environment variables over config files for sensitive values like API keys.
+
+### Memory Configuration
+
+When `memory.enabled` is `true`, gateway uses the SQLite memory engine with:
+- Tier 1 profile loading into system prompt
+- Tier 2 retrieval injection for memory-like user queries
+- Async extraction buffering after each dialog turn
+- Daily and weekly internal memory compression cron jobs
+
+Example:
+
+```json
+"memory": {
+  "enabled": true,
+  "model": "gpt-5",
+  "maxTokens": 8192,
+  "dbPath": "",
+  "provider": {
+    "type": "openai",
+    "apiKey": "sk-xxx",
+    "baseUrl": "https://example.com/v1"
+  },
+  "extraction": {
+    "quietGap": "3m",
+    "tokenBudget": 0.6,
+    "dailyFlush": "03:00"
+  }
+}
+```
 
 ## Channel Setup
 

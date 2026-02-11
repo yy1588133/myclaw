@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 const (
@@ -16,6 +17,9 @@ const (
 	DefaultHost              = "0.0.0.0"
 	DefaultPort              = 18790
 	DefaultBufSize           = 100
+	DefaultMemoryQuietGap    = "3m"
+	DefaultMemoryTokenBudget = 0.6
+	DefaultMemoryDailyFlush  = "03:00"
 )
 
 type Config struct {
@@ -24,6 +28,22 @@ type Config struct {
 	Provider ProviderConfig `json:"provider"`
 	Tools    ToolsConfig    `json:"tools"`
 	Gateway  GatewayConfig  `json:"gateway"`
+	Memory   MemoryConfig   `json:"memory"`
+}
+
+type MemoryConfig struct {
+	Enabled    bool             `json:"enabled"`
+	Model      string           `json:"model,omitempty"`
+	MaxTokens  int              `json:"maxTokens,omitempty"`
+	DBPath     string           `json:"dbPath,omitempty"`
+	Provider   *ProviderConfig  `json:"provider,omitempty"`
+	Extraction ExtractionConfig `json:"extraction"`
+}
+
+type ExtractionConfig struct {
+	QuietGap    string  `json:"quietGap,omitempty"`
+	TokenBudget float64 `json:"tokenBudget,omitempty"`
+	DailyFlush  string  `json:"dailyFlush,omitempty"`
 }
 
 type AgentConfig struct {
@@ -93,11 +113,22 @@ func DefaultConfig() *Config {
 			Host: DefaultHost,
 			Port: DefaultPort,
 		},
+		Memory: MemoryConfig{
+			Enabled: false,
+			Extraction: ExtractionConfig{
+				QuietGap:    DefaultMemoryQuietGap,
+				TokenBudget: DefaultMemoryTokenBudget,
+				DailyFlush:  DefaultMemoryDailyFlush,
+			},
+		},
 	}
 }
 
 func ConfigDir() string {
-	home, _ := os.UserHomeDir()
+	home := os.Getenv("HOME")
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
 	return filepath.Join(home, ".myclaw")
 }
 
@@ -150,9 +181,57 @@ func LoadConfig() (*Config, error) {
 	if appSecret := os.Getenv("MYCLAW_FEISHU_APP_SECRET"); appSecret != "" {
 		cfg.Channels.Feishu.AppSecret = appSecret
 	}
+	if enabled := os.Getenv("MYCLAW_MEMORY_ENABLED"); enabled != "" {
+		if parsed, err := strconv.ParseBool(enabled); err == nil {
+			cfg.Memory.Enabled = parsed
+		}
+	}
+	if model := os.Getenv("MYCLAW_MEMORY_MODEL"); model != "" {
+		cfg.Memory.Model = model
+	}
+	if key := os.Getenv("MYCLAW_MEMORY_API_KEY"); key != "" {
+		if cfg.Memory.Provider == nil {
+			cfg.Memory.Provider = &ProviderConfig{}
+		}
+		cfg.Memory.Provider.APIKey = key
+	}
+	if url := os.Getenv("MYCLAW_MEMORY_BASE_URL"); url != "" {
+		if cfg.Memory.Provider == nil {
+			cfg.Memory.Provider = &ProviderConfig{}
+		}
+		cfg.Memory.Provider.BaseURL = url
+	}
+	if dbPath := os.Getenv("MYCLAW_MEMORY_DB_PATH"); dbPath != "" {
+		cfg.Memory.DBPath = dbPath
+	}
+	if maxTokens := os.Getenv("MYCLAW_MEMORY_MAX_TOKENS"); maxTokens != "" {
+		if parsed, err := strconv.Atoi(maxTokens); err == nil {
+			cfg.Memory.MaxTokens = parsed
+		}
+	}
+	if quietGap := os.Getenv("MYCLAW_MEMORY_QUIET_GAP"); quietGap != "" {
+		cfg.Memory.Extraction.QuietGap = quietGap
+	}
+	if tokenBudget := os.Getenv("MYCLAW_MEMORY_TOKEN_BUDGET"); tokenBudget != "" {
+		if parsed, err := strconv.ParseFloat(tokenBudget, 64); err == nil {
+			cfg.Memory.Extraction.TokenBudget = parsed
+		}
+	}
+	if dailyFlush := os.Getenv("MYCLAW_MEMORY_DAILY_FLUSH"); dailyFlush != "" {
+		cfg.Memory.Extraction.DailyFlush = dailyFlush
+	}
 
 	if cfg.Agent.Workspace == "" {
 		cfg.Agent.Workspace = DefaultConfig().Agent.Workspace
+	}
+	if cfg.Memory.Extraction.QuietGap == "" {
+		cfg.Memory.Extraction.QuietGap = DefaultMemoryQuietGap
+	}
+	if cfg.Memory.Extraction.TokenBudget <= 0 {
+		cfg.Memory.Extraction.TokenBudget = DefaultMemoryTokenBudget
+	}
+	if cfg.Memory.Extraction.DailyFlush == "" {
+		cfg.Memory.Extraction.DailyFlush = DefaultMemoryDailyFlush
 	}
 
 	return cfg, nil

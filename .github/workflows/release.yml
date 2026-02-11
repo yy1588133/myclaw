@@ -56,10 +56,6 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
-          - goos: windows
-            goarch: amd64
-          - goos: windows
-            goarch: arm64
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
       REF_TO_BUILD: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}

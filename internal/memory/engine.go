@@ -442,6 +442,72 @@ func (e *Engine) knownProjectsSnapshot() []string {
 	return out
 }
 
+func (e *Engine) IsEmpty() (bool, error) {
+	var memoriesCount int
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM memories WHERE is_archived = 0`).Scan(&memoriesCount); err != nil {
+		return false, fmt.Errorf("count memories: %w", err)
+	}
+	if memoriesCount > 0 {
+		return false, nil
+	}
+
+	var eventsCount int
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM daily_events`).Scan(&eventsCount); err != nil {
+		return false, fmt.Errorf("count daily events: %w", err)
+	}
+	return eventsCount == 0, nil
+}
+
+func (e *Engine) LoadKnownProjects() ([]string, error) {
+	rows, err := e.db.Query(`
+		SELECT DISTINCT project FROM memories
+		WHERE tier = 2 AND is_archived = 0 AND project != '_global'
+		ORDER BY project ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("load known projects: %w", err)
+	}
+	defer rows.Close()
+
+	projects := make([]string, 0)
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			return nil, fmt.Errorf("scan known project: %w", err)
+		}
+		if project = strings.TrimSpace(project); project != "" {
+			projects = append(projects, project)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate known projects: %w", err)
+	}
+	return projects, nil
+}
+
+func (e *Engine) Stats() (MemoryStats, error) {
+	stats := MemoryStats{}
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM memories WHERE tier = 1 AND is_archived = 0`).Scan(&stats.Tier1Count); err != nil {
+		return MemoryStats{}, fmt.Errorf("count tier1: %w", err)
+	}
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM memories WHERE tier = 2 AND is_archived = 0`).Scan(&stats.Tier2ActiveCount); err != nil {
+		return MemoryStats{}, fmt.Errorf("count tier2 active: %w", err)
+	}
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM memories WHERE tier = 2 AND is_archived = 1`).Scan(&stats.Tier2Archived); err != nil {
+		return MemoryStats{}, fmt.Errorf("count tier2 archived: %w", err)
+	}
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM daily_events WHERE is_compressed = 0`).Scan(&stats.EventPending); err != nil {
+		return MemoryStats{}, fmt.Errorf("count pending events: %w", err)
+	}
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM daily_events WHERE is_compressed = 1`).Scan(&stats.EventCompressed); err != nil {
+		return MemoryStats{}, fmt.Errorf("count compressed events: %w", err)
+	}
+	if err := e.db.QueryRow(`SELECT COUNT(1) FROM extraction_buffer`).Scan(&stats.BufferMessages); err != nil {
+		return MemoryStats{}, fmt.Errorf("count buffer messages: %w", err)
+	}
+	return stats, nil
+}
+
 func scanMemories(rows *sql.Rows) ([]Memory, error) {
 	result := make([]Memory, 0)
 	for rows.Next() {

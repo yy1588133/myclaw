@@ -100,7 +100,9 @@ type Gateway struct {
 	channels   *channel.ChannelManager
 	cron       *cron.Service
 	hb         *heartbeat.Service
-	mem        *memory.MemoryStore
+	memEngine  *memory.Engine
+	memLLM     memory.LLMClient
+	extraction *memory.ExtractionService
 	skillRegs  []api.SkillRegistration
 	signalChan chan os.Signal // for testing
 }
@@ -117,8 +119,36 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	// Message bus
 	g.bus = bus.NewMessageBus(config.DefaultBufSize)
 
-	// Memory
-	g.mem = memory.NewMemoryStore(cfg.Agent.Workspace)
+	// Memory (SQLite layered memory is the primary runtime backend)
+	dbPath := strings.TrimSpace(cfg.Memory.DBPath)
+	if dbPath == "" {
+		dbPath = filepath.Join(config.ConfigDir(), "data", "memory.db")
+	}
+	engine, err := memory.NewEngine(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("create memory engine: %w", err)
+	}
+	g.memEngine = engine
+
+	empty, err := g.memEngine.IsEmpty()
+	if err != nil {
+		_ = g.memEngine.Close()
+		return nil, fmt.Errorf("inspect memory engine state: %w", err)
+	}
+	if empty {
+		if err := memory.MigrateFromFiles(cfg.Agent.Workspace, g.memEngine); err != nil {
+			_ = g.memEngine.Close()
+			return nil, fmt.Errorf("migrate legacy file memory: %w", err)
+		}
+	}
+	if projects, err := g.memEngine.LoadKnownProjects(); err != nil {
+		log.Printf("[memory] load known projects warning: %v", err)
+	} else {
+		g.memEngine.SetKnownProjects(projects)
+	}
+
+	g.memLLM = memory.NewLLMClient(cfg)
+	g.extraction = memory.NewExtractionService(g.memEngine, g.memLLM, cfg.Memory.Extraction)
 
 	// Build system prompt
 	sysPrompt := g.buildSystemPrompt()
@@ -137,16 +167,14 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 
 	// Create runtime using factory (allows injection for testing)
 	factory := opts.RuntimeFactory
-	var (
-		rt  Runtime
-		err error
-	)
+	var rt Runtime
 	if factory == nil {
 		rt, err = newRuntime(cfg, sysPrompt, g.skillRegs)
 	} else {
 		rt, err = factory(cfg, sysPrompt)
 	}
 	if err != nil {
+		_ = g.memEngine.Close()
 		return nil, err
 	}
 	g.runtime = rt
@@ -163,6 +191,13 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	cronStorePath := filepath.Join(config.ConfigDir(), "data", "cron", "jobs.json")
 	g.cron = cron.NewService(cronStorePath)
 	g.cron.OnJob = func(job cron.CronJob) (string, error) {
+		switch job.Payload.Message {
+		case "__internal:memory:daily-compress":
+			return "ok", g.memEngine.DailyCompress(g.memLLM)
+		case "__internal:memory:weekly-compress":
+			return "ok", g.memEngine.WeeklyDeepCompress(g.memLLM)
+		}
+
 		result, err := runAgent(job.Payload.Message)
 		if err != nil {
 			return "", err
@@ -203,11 +238,52 @@ func (g *Gateway) buildSystemPrompt() string {
 		sb.WriteString("\n\n")
 	}
 
-	if memCtx := g.mem.GetMemoryContext(); memCtx != "" {
-		sb.WriteString(memCtx)
+	if profile, err := g.memEngine.LoadTier1(); err != nil {
+		log.Printf("[memory] load tier1 for system prompt warning: %v", err)
+	} else if strings.TrimSpace(profile) != "" {
+		sb.WriteString("# Core Memory\n")
+		sb.WriteString(profile)
+		sb.WriteString("\n\n")
 	}
 
 	return sb.String()
+}
+
+func (g *Gateway) ensureInternalMemoryJobs() error {
+	const (
+		dailyName  = "__internal_memory_daily_compress"
+		weeklyName = "__internal_memory_weekly_compress"
+		dailyMsg   = "__internal:memory:daily-compress"
+		weeklyMsg  = "__internal:memory:weekly-compress"
+		dailyExpr  = "0 0 3 * * *"
+		weeklyExpr = "0 0 4 * * 1"
+	)
+
+	jobs := g.cron.ListJobs()
+	hasDaily := false
+	hasWeekly := false
+	for _, job := range jobs {
+		if job.Payload.Message == dailyMsg || job.Name == dailyName {
+			hasDaily = true
+		}
+		if job.Payload.Message == weeklyMsg || job.Name == weeklyName {
+			hasWeekly = true
+		}
+	}
+
+	if !hasDaily {
+		_, err := g.cron.AddJob(dailyName, cron.Schedule{Kind: "cron", Expr: dailyExpr}, cron.Payload{Message: dailyMsg})
+		if err != nil {
+			return err
+		}
+	}
+	if !hasWeekly {
+		_, err := g.cron.AddJob(weeklyName, cron.Schedule{Kind: "cron", Expr: weeklyExpr}, cron.Payload{Message: weeklyMsg})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (g *Gateway) runAgent(ctx context.Context, prompt, sessionID string, contentBlocks []model.ContentBlock) (string, error) {
@@ -249,6 +325,13 @@ func (g *Gateway) Run(ctx context.Context) error {
 	if err := g.cron.Start(ctx); err != nil {
 		log.Printf("[gateway] cron start warning: %v", err)
 	}
+	if err := g.ensureInternalMemoryJobs(); err != nil {
+		log.Printf("[gateway] ensure internal memory jobs warning: %v", err)
+	}
+
+	if g.extraction != nil {
+		g.extraction.Start(ctx)
+	}
 
 	go func() {
 		if err := g.hb.Start(ctx); err != nil {
@@ -278,10 +361,29 @@ func (g *Gateway) processLoop(ctx context.Context) {
 		case msg := <-g.bus.Inbound:
 			log.Printf("[gateway] inbound from %s/%s: %s", msg.Channel, msg.SenderID, truncate(msg.Content, 80))
 
-			result, err := g.runAgent(ctx, msg.Content, msg.SessionKey(), msg.ContentBlocks)
+			if g.extraction != nil {
+				go g.extraction.BufferMessage(msg.Channel, msg.SenderID, "user", msg.Content)
+			}
+
+			prompt := msg.Content
+			if g.memEngine != nil && memory.ShouldRetrieve(msg.Content) {
+				memories, err := g.memEngine.Retrieve(msg.Content)
+				if err != nil {
+					log.Printf("[memory] retrieve warning: %v", err)
+				} else if len(memories) > 0 {
+					memoryContext := memory.FormatMemories(memories)
+					prompt = fmt.Sprintf("[Relevant Memory]\n%s\n\n[User Message]\n%s", memoryContext, msg.Content)
+				}
+			}
+
+			result, err := g.runAgent(ctx, prompt, msg.SessionKey(), msg.ContentBlocks)
 			if err != nil {
 				log.Printf("[gateway] agent error: %v", err)
 				result = "Sorry, I encountered an error processing your message."
+			}
+
+			if g.extraction != nil && strings.TrimSpace(result) != "" {
+				go g.extraction.BufferMessage(msg.Channel, msg.SenderID, "assistant", result)
 			}
 
 			if result != "" {
@@ -298,7 +400,15 @@ func (g *Gateway) processLoop(ctx context.Context) {
 }
 
 func (g *Gateway) Shutdown() error {
+	if g.extraction != nil {
+		g.extraction.Stop()
+	}
 	g.cron.Stop()
+	if g.memEngine != nil {
+		if err := g.memEngine.Close(); err != nil {
+			log.Printf("[gateway] close memory engine warning: %v", err)
+		}
+	}
 	_ = g.channels.StopAll()
 	if g.runtime != nil {
 		g.runtime.Close()

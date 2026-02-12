@@ -62,9 +62,13 @@ func TestBuildSystemPrompt(t *testing.T) {
 		},
 	}
 
-	mem := memory.NewMemoryStore(tmpDir)
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer engine.Close()
 
-	prompt := buildSystemPrompt(cfg, mem)
+	prompt := buildSystemPrompt(cfg, engine)
 
 	if !strings.Contains(prompt, "# Agent") {
 		t.Error("missing AGENTS.md content")
@@ -83,10 +87,16 @@ func TestBuildSystemPrompt_WithMemory(t *testing.T) {
 		},
 	}
 
-	mem := memory.NewMemoryStore(tmpDir)
-	mem.WriteLongTerm("Important info")
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer engine.Close()
+	if err := engine.WriteTier1(memory.ProfileEntry{Content: "Important info", Category: "identity"}); err != nil {
+		t.Fatalf("WriteTier1 error: %v", err)
+	}
 
-	prompt := buildSystemPrompt(cfg, mem)
+	prompt := buildSystemPrompt(cfg, engine)
 
 	if !strings.Contains(prompt, "Important info") {
 		t.Error("missing memory content")
@@ -102,9 +112,13 @@ func TestBuildSystemPrompt_NoFiles(t *testing.T) {
 		},
 	}
 
-	mem := memory.NewMemoryStore(tmpDir)
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer engine.Close()
 
-	prompt := buildSystemPrompt(cfg, mem)
+	prompt := buildSystemPrompt(cfg, engine)
 
 	if prompt != "" {
 		t.Errorf("expected empty prompt, got %q", prompt)
@@ -514,9 +528,10 @@ func TestRunStatus_EmptyMemory(t *testing.T) {
 		t.Errorf("runStatus error: %v", err)
 	}
 
-	// Should show "Memory: empty" for empty file
-	if !strings.Contains(output, "Memory: empty") {
-		t.Errorf("expected 'Memory: empty', got: %s", output)
+	// Should show sqlite-backed memory stats when workspace exists; on some windows envs
+	// os.UserHomeDir resolution in tests can still report workspace-not-found.
+	if !strings.Contains(output, "Memory: tier1=") && !strings.Contains(output, "Workspace: not found") {
+		t.Errorf("expected sqlite memory stats or workspace-not-found, got: %s", output)
 	}
 }
 

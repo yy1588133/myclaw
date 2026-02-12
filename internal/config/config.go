@@ -182,7 +182,7 @@ func DefaultConfig() *Config {
 			Port: DefaultPort,
 		},
 		Memory: MemoryConfig{
-			Enabled: false,
+			Enabled: true,
 			Extraction: ExtractionConfig{
 				QuietGap:    DefaultMemoryQuietGap,
 				TokenBudget: DefaultMemoryTokenBudget,

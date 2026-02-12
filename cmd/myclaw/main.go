@@ -46,8 +46,27 @@ func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 		return nil, fmt.Errorf("API key not set. Run 'myclaw onboard' or set MYCLAW_API_KEY / ANTHROPIC_API_KEY")
 	}
 
-	mem := memory.NewMemoryStore(cfg.Agent.Workspace)
-	sysPrompt := buildSystemPrompt(cfg, mem)
+	dbPath := strings.TrimSpace(cfg.Memory.DBPath)
+	if dbPath == "" {
+		dbPath = filepath.Join(config.ConfigDir(), "data", "memory.db")
+	}
+	engine, err := memory.NewEngine(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("create memory engine: %w", err)
+	}
+	defer engine.Close()
+
+	empty, err := engine.IsEmpty()
+	if err != nil {
+		return nil, fmt.Errorf("inspect memory engine state: %w", err)
+	}
+	if empty {
+		if err := memory.MigrateFromFiles(cfg.Agent.Workspace, engine); err != nil {
+			return nil, fmt.Errorf("migrate legacy file memory: %w", err)
+		}
+	}
+
+	sysPrompt := buildSystemPrompt(cfg, engine)
 
 	var provider api.ModelFactory
 	switch cfg.Provider.Type {
@@ -261,13 +280,12 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 
 	cfg, _ := config.LoadConfig()
 	ws := cfg.Agent.Workspace
-	if err := os.MkdirAll(filepath.Join(ws, "memory"), 0755); err != nil {
+	if err := os.MkdirAll(ws, 0755); err != nil {
 		return fmt.Errorf("create workspace: %w", err)
 	}
 
 	writeIfNotExists(filepath.Join(ws, "AGENTS.md"), defaultAgentsMD)
 	writeIfNotExists(filepath.Join(ws, "SOUL.md"), defaultSoulMD)
-	writeIfNotExists(filepath.Join(ws, "memory", "MEMORY.md"), "")
 	writeIfNotExists(filepath.Join(ws, "HEARTBEAT.md"), "")
 
 	fmt.Printf("Workspace ready: %s\n", ws)
@@ -305,13 +323,23 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(cfg.Agent.Workspace); err != nil {
 		fmt.Println("Workspace: not found (run 'myclaw onboard')")
 	} else {
-		mem := memory.NewMemoryStore(cfg.Agent.Workspace)
-		lt, _ := mem.ReadLongTerm()
-		if lt != "" {
-			fmt.Printf("Memory: %d bytes\n", len(lt))
-		} else {
-			fmt.Println("Memory: empty")
+		dbPath := strings.TrimSpace(cfg.Memory.DBPath)
+		if dbPath == "" {
+			dbPath = filepath.Join(config.ConfigDir(), "data", "memory.db")
 		}
+		engine, err := memory.NewEngine(dbPath)
+		if err != nil {
+			fmt.Printf("Memory: error (%v)\n", err)
+			return nil
+		}
+		defer engine.Close()
+		stats, err := engine.Stats()
+		if err != nil {
+			fmt.Printf("Memory: error (%v)\n", err)
+			return nil
+		}
+		fmt.Printf("Memory: tier1=%d tier2_active=%d tier2_archived=%d pending_events=%d compressed_events=%d buffer=%d\n",
+			stats.Tier1Count, stats.Tier2ActiveCount, stats.Tier2Archived, stats.EventPending, stats.EventCompressed, stats.BufferMessages)
 	}
 
 	return nil
@@ -324,7 +352,7 @@ func providerDisplay(t string) string {
 	return t
 }
 
-func buildSystemPrompt(cfg *config.Config, mem *memory.MemoryStore) string {
+func buildSystemPrompt(cfg *config.Config, engine *memory.Engine) string {
 	var sb strings.Builder
 
 	if data, err := os.ReadFile(filepath.Join(cfg.Agent.Workspace, "AGENTS.md")); err == nil {
@@ -337,8 +365,10 @@ func buildSystemPrompt(cfg *config.Config, mem *memory.MemoryStore) string {
 		sb.WriteString("\n\n")
 	}
 
-	if memCtx := mem.GetMemoryContext(); memCtx != "" {
-		sb.WriteString(memCtx)
+	if profile, err := engine.LoadTier1(); err == nil && strings.TrimSpace(profile) != "" {
+		sb.WriteString("# Core Memory\n")
+		sb.WriteString(profile)
+		sb.WriteString("\n\n")
 	}
 
 	return sb.String()

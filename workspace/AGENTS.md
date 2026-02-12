@@ -12,9 +12,8 @@ Use them to help the user accomplish tasks.
 - Check your memory context for previously stored information
 
 ## Memory System Notes
-- The gateway supports two memory modes:
-  - legacy file memory (`workspace/memory/MEMORY.md` + daily markdown files)
-  - SQLite tiered memory (enabled by config `memory.enabled=true`)
+- The gateway uses SQLite tiered memory as primary memory backend.
+- Legacy file memory is only used as migration source on first startup when database is empty.
 - In SQLite mode:
   - Core profile (Tier 1) is injected into system prompt
   - Relevant memory snippets (Tier 2) can be injected into user prompt

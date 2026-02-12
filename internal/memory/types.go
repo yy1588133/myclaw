@@ -70,3 +70,13 @@ type ProfileEntry struct {
 type ProfileResult struct {
 	Entries []ProfileEntry `json:"entries"`
 }
+
+// MemoryStats is a compact snapshot used by status reporting.
+type MemoryStats struct {
+	Tier1Count       int
+	Tier2ActiveCount int
+	Tier2Archived    int
+	EventPending     int
+	EventCompressed  int
+	BufferMessages   int
+}

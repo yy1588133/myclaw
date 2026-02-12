@@ -48,6 +48,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.Workspace == "" {
 		t.Error("workspace should not be empty")
 	}
+	if !cfg.Memory.Enabled {
+		t.Error("memory.enabled should be true by default")
+	}
+	if cfg.Memory.Extraction.QuietGap != DefaultMemoryQuietGap {
+		t.Errorf("memory.extraction.quietGap = %q, want %q", cfg.Memory.Extraction.QuietGap, DefaultMemoryQuietGap)
+	}
 }
 
 func TestLoadConfig_NoFile(t *testing.T) {

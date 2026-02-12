@@ -161,3 +161,47 @@ func TestEngineConcurrentWrites(t *testing.T) {
 		t.Fatalf("expected 20 rows, got %d", len(q))
 	}
 }
+
+func TestEngineStateHelpers(t *testing.T) {
+	e, err := NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer e.Close()
+
+	empty, err := e.IsEmpty()
+	if err != nil {
+		t.Fatalf("IsEmpty error: %v", err)
+	}
+	if !empty {
+		t.Fatal("new engine should be empty")
+	}
+
+	if err := e.WriteTier2(FactEntry{Content: "project fact", Project: "myclaw", Topic: "memory", Category: "event", Importance: 0.6}); err != nil {
+		t.Fatalf("WriteTier2 error: %v", err)
+	}
+
+	empty, err = e.IsEmpty()
+	if err != nil {
+		t.Fatalf("IsEmpty error: %v", err)
+	}
+	if empty {
+		t.Fatal("engine should not be empty after writes")
+	}
+
+	projects, err := e.LoadKnownProjects()
+	if err != nil {
+		t.Fatalf("LoadKnownProjects error: %v", err)
+	}
+	if len(projects) != 1 || projects[0] != "myclaw" {
+		t.Fatalf("unexpected known projects: %+v", projects)
+	}
+
+	stats, err := e.Stats()
+	if err != nil {
+		t.Fatalf("Stats error: %v", err)
+	}
+	if stats.Tier2ActiveCount != 1 {
+		t.Fatalf("expected tier2 active count=1, got %d", stats.Tier2ActiveCount)
+	}
+}

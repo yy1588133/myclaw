@@ -75,8 +75,13 @@ func TestGateway_BuildSystemPrompt(t *testing.T) {
 
 	g := &Gateway{
 		cfg: cfg,
-		mem: memory.NewMemoryStore(tmpDir),
 	}
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer engine.Close()
+	g.memEngine = engine
 
 	prompt := g.buildSystemPrompt()
 
@@ -94,8 +99,14 @@ func TestGateway_BuildSystemPrompt(t *testing.T) {
 func TestGateway_BuildSystemPrompt_WithMemory(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	mem := memory.NewMemoryStore(tmpDir)
-	mem.WriteLongTerm("User is a developer.")
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer engine.Close()
+	if err := engine.WriteTier1(memory.ProfileEntry{Content: "User is a developer.", Category: "identity"}); err != nil {
+		t.Fatalf("WriteTier1 error: %v", err)
+	}
 
 	cfg := &config.Config{
 		Agent: config.AgentConfig{
@@ -104,8 +115,8 @@ func TestGateway_BuildSystemPrompt_WithMemory(t *testing.T) {
 	}
 
 	g := &Gateway{
-		cfg: cfg,
-		mem: mem,
+		cfg:       cfg,
+		memEngine: engine,
 	}
 
 	prompt := g.buildSystemPrompt()
@@ -126,8 +137,13 @@ func TestGateway_BuildSystemPrompt_NoFiles(t *testing.T) {
 
 	g := &Gateway{
 		cfg: cfg,
-		mem: memory.NewMemoryStore(tmpDir),
 	}
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer engine.Close()
+	g.memEngine = engine
 
 	prompt := g.buildSystemPrompt()
 
@@ -157,13 +173,17 @@ func TestGateway_Shutdown(t *testing.T) {
 		channels: chMgr,
 		cron:     cronSvc,
 		hb:       heartbeat.New(tmpDir, nil, 0),
-		mem:      memory.NewMemoryStore(tmpDir),
 		runtime:  mockRt,
 	}
-
-	err := g.Shutdown()
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
 	if err != nil {
-		t.Errorf("Shutdown error: %v", err)
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	g.memEngine = engine
+
+	shutdownErr := g.Shutdown()
+	if shutdownErr != nil {
+		t.Errorf("Shutdown error: %v", shutdownErr)
 	}
 	if !mockRt.closed {
 		t.Error("runtime should be closed")
@@ -529,11 +549,15 @@ func TestGateway_Shutdown_NilRuntime(t *testing.T) {
 		channels: chMgr,
 		cron:     cronSvc,
 		hb:       heartbeat.New(tmpDir, nil, 0),
-		mem:      memory.NewMemoryStore(tmpDir),
 		runtime:  nil,
 	}
+	engine, err := memory.NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	g.memEngine = engine
 
-	err := g.Shutdown()
+	err = g.Shutdown()
 	if err != nil {
 		t.Errorf("Shutdown error: %v", err)
 	}
@@ -585,8 +609,8 @@ func TestNewWithOptions_MockRuntime(t *testing.T) {
 	if g.bus == nil {
 		t.Error("bus should not be nil")
 	}
-	if g.mem == nil {
-		t.Error("mem should not be nil")
+	if g.memEngine == nil {
+		t.Error("memEngine should not be nil")
 	}
 	if g.cron == nil {
 		t.Error("cron should not be nil")

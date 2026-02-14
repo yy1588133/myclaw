@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -20,6 +21,19 @@ const (
 	DefaultMemoryQuietGap    = "3m"
 	DefaultMemoryTokenBudget = 0.6
 	DefaultMemoryDailyFlush  = "03:00"
+
+	MemoryRetrievalModeClassic  = "classic"
+	MemoryRetrievalModeEnhanced = "enhanced"
+
+	DefaultMemoryRetrievalMode           = MemoryRetrievalModeClassic
+	DefaultMemoryStrongSignalThreshold   = 0.85
+	DefaultMemoryStrongSignalGap         = 0.15
+	DefaultMemoryRetrievalCandidateLimit = 40
+	DefaultMemoryRetrievalRerankLimit    = 20
+	DefaultMemoryEmbeddingTimeoutMs      = 30000
+	DefaultMemoryEmbeddingBatchSize      = 16
+	DefaultMemoryRerankTimeoutMs         = 30000
+	DefaultMemoryRerankTopN              = 8
 )
 
 type Config struct {
@@ -43,12 +57,45 @@ type MemoryConfig struct {
 	DBPath     string           `json:"dbPath,omitempty"`
 	Provider   *ProviderConfig  `json:"provider,omitempty"`
 	Extraction ExtractionConfig `json:"extraction"`
+	Retrieval  RetrievalConfig  `json:"retrieval"`
+	Embedding  EmbeddingConfig  `json:"embedding"`
+	Rerank     RerankConfig     `json:"rerank"`
 }
 
 type ExtractionConfig struct {
 	QuietGap    string  `json:"quietGap,omitempty"`
 	TokenBudget float64 `json:"tokenBudget,omitempty"`
 	DailyFlush  string  `json:"dailyFlush,omitempty"`
+}
+
+type RetrievalConfig struct {
+	Mode                  string  `json:"mode,omitempty"`
+	StrongSignalThreshold float64 `json:"strongSignalThreshold,omitempty"`
+	StrongSignalGap       float64 `json:"strongSignalGap,omitempty"`
+	CandidateLimit        int     `json:"candidateLimit,omitempty"`
+	RerankLimit           int     `json:"rerankLimit,omitempty"`
+}
+
+type EmbeddingConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Provider  string `json:"provider,omitempty"`
+	BaseURL   string `json:"baseUrl,omitempty"`
+	APIKey    string `json:"apiKey,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Dimension int    `json:"dimension,omitempty"`
+	TimeoutMs int    `json:"timeoutMs,omitempty"`
+	BatchSize int    `json:"batchSize,omitempty"`
+}
+
+type RerankConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Provider  string `json:"provider,omitempty"`
+	BaseURL   string `json:"baseUrl,omitempty"`
+	APIKey    string `json:"apiKey,omitempty"`
+	Model     string `json:"model,omitempty"`
+	TimeoutMs int    `json:"timeoutMs,omitempty"`
+	TopN      int    `json:"topN,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 type AgentConfig struct {
@@ -188,6 +235,23 @@ func DefaultConfig() *Config {
 				TokenBudget: DefaultMemoryTokenBudget,
 				DailyFlush:  DefaultMemoryDailyFlush,
 			},
+			Retrieval: RetrievalConfig{
+				Mode:                  DefaultMemoryRetrievalMode,
+				StrongSignalThreshold: DefaultMemoryStrongSignalThreshold,
+				StrongSignalGap:       DefaultMemoryStrongSignalGap,
+				CandidateLimit:        DefaultMemoryRetrievalCandidateLimit,
+				RerankLimit:           DefaultMemoryRetrievalRerankLimit,
+			},
+			Embedding: EmbeddingConfig{
+				Enabled:   false,
+				TimeoutMs: DefaultMemoryEmbeddingTimeoutMs,
+				BatchSize: DefaultMemoryEmbeddingBatchSize,
+			},
+			Rerank: RerankConfig{
+				Enabled:   false,
+				TimeoutMs: DefaultMemoryRerankTimeoutMs,
+				TopN:      DefaultMemoryRerankTopN,
+			},
 		},
 	}
 }
@@ -294,6 +358,91 @@ func LoadConfig() (*Config, error) {
 	if dailyFlush := os.Getenv("MYCLAW_MEMORY_DAILY_FLUSH"); dailyFlush != "" {
 		cfg.Memory.Extraction.DailyFlush = dailyFlush
 	}
+	if mode := os.Getenv("MYCLAW_MEMORY_RETRIEVAL_MODE"); mode != "" {
+		cfg.Memory.Retrieval.Mode = mode
+	}
+	if threshold := os.Getenv("MYCLAW_MEMORY_RETRIEVAL_STRONG_SIGNAL_THRESHOLD"); threshold != "" {
+		if parsed, err := strconv.ParseFloat(threshold, 64); err == nil {
+			cfg.Memory.Retrieval.StrongSignalThreshold = parsed
+		}
+	}
+	if gap := os.Getenv("MYCLAW_MEMORY_RETRIEVAL_STRONG_SIGNAL_GAP"); gap != "" {
+		if parsed, err := strconv.ParseFloat(gap, 64); err == nil {
+			cfg.Memory.Retrieval.StrongSignalGap = parsed
+		}
+	}
+	if limit := os.Getenv("MYCLAW_MEMORY_RETRIEVAL_CANDIDATE_LIMIT"); limit != "" {
+		if parsed, err := strconv.Atoi(limit); err == nil {
+			cfg.Memory.Retrieval.CandidateLimit = parsed
+		}
+	}
+	if limit := os.Getenv("MYCLAW_MEMORY_RETRIEVAL_RERANK_LIMIT"); limit != "" {
+		if parsed, err := strconv.Atoi(limit); err == nil {
+			cfg.Memory.Retrieval.RerankLimit = parsed
+		}
+	}
+	if enabled := os.Getenv("MYCLAW_MEMORY_EMBEDDING_ENABLED"); enabled != "" {
+		if parsed, err := strconv.ParseBool(enabled); err == nil {
+			cfg.Memory.Embedding.Enabled = parsed
+		}
+	}
+	if provider := os.Getenv("MYCLAW_MEMORY_EMBEDDING_PROVIDER"); provider != "" {
+		cfg.Memory.Embedding.Provider = provider
+	}
+	if url := os.Getenv("MYCLAW_MEMORY_EMBEDDING_BASE_URL"); url != "" {
+		cfg.Memory.Embedding.BaseURL = url
+	}
+	if key := os.Getenv("MYCLAW_MEMORY_EMBEDDING_API_KEY"); key != "" {
+		cfg.Memory.Embedding.APIKey = key
+	}
+	if model := os.Getenv("MYCLAW_MEMORY_EMBEDDING_MODEL"); model != "" {
+		cfg.Memory.Embedding.Model = model
+	}
+	if dimension := os.Getenv("MYCLAW_MEMORY_EMBEDDING_DIMENSION"); dimension != "" {
+		if parsed, err := strconv.Atoi(dimension); err == nil {
+			cfg.Memory.Embedding.Dimension = parsed
+		}
+	}
+	if timeout := os.Getenv("MYCLAW_MEMORY_EMBEDDING_TIMEOUT_MS"); timeout != "" {
+		if parsed, err := strconv.Atoi(timeout); err == nil {
+			cfg.Memory.Embedding.TimeoutMs = parsed
+		}
+	}
+	if batchSize := os.Getenv("MYCLAW_MEMORY_EMBEDDING_BATCH_SIZE"); batchSize != "" {
+		if parsed, err := strconv.Atoi(batchSize); err == nil {
+			cfg.Memory.Embedding.BatchSize = parsed
+		}
+	}
+	if enabled := os.Getenv("MYCLAW_MEMORY_RERANK_ENABLED"); enabled != "" {
+		if parsed, err := strconv.ParseBool(enabled); err == nil {
+			cfg.Memory.Rerank.Enabled = parsed
+		}
+	}
+	if provider := os.Getenv("MYCLAW_MEMORY_RERANK_PROVIDER"); provider != "" {
+		cfg.Memory.Rerank.Provider = provider
+	}
+	if url := os.Getenv("MYCLAW_MEMORY_RERANK_BASE_URL"); url != "" {
+		cfg.Memory.Rerank.BaseURL = url
+	}
+	if key := os.Getenv("MYCLAW_MEMORY_RERANK_API_KEY"); key != "" {
+		cfg.Memory.Rerank.APIKey = key
+	}
+	if model := os.Getenv("MYCLAW_MEMORY_RERANK_MODEL"); model != "" {
+		cfg.Memory.Rerank.Model = model
+	}
+	if timeout := os.Getenv("MYCLAW_MEMORY_RERANK_TIMEOUT_MS"); timeout != "" {
+		if parsed, err := strconv.Atoi(timeout); err == nil {
+			cfg.Memory.Rerank.TimeoutMs = parsed
+		}
+	}
+	if topN := os.Getenv("MYCLAW_MEMORY_RERANK_TOP_N"); topN != "" {
+		if parsed, err := strconv.Atoi(topN); err == nil {
+			cfg.Memory.Rerank.TopN = parsed
+		}
+	}
+	if mode := os.Getenv("MYCLAW_MEMORY_RERANK_MODE"); mode != "" {
+		cfg.Memory.Rerank.Mode = mode
+	}
 
 	if cfg.Agent.Workspace == "" {
 		cfg.Agent.Workspace = DefaultConfig().Agent.Workspace
@@ -307,8 +456,47 @@ func LoadConfig() (*Config, error) {
 	if cfg.Memory.Extraction.DailyFlush == "" {
 		cfg.Memory.Extraction.DailyFlush = DefaultMemoryDailyFlush
 	}
+	cfg.Memory.Retrieval.Mode = normalizeRetrievalMode(cfg.Memory.Retrieval.Mode)
+	if cfg.Memory.Retrieval.StrongSignalThreshold < 0 {
+		cfg.Memory.Retrieval.StrongSignalThreshold = DefaultMemoryStrongSignalThreshold
+	}
+	if cfg.Memory.Retrieval.StrongSignalGap < 0 {
+		cfg.Memory.Retrieval.StrongSignalGap = DefaultMemoryStrongSignalGap
+	}
+	if cfg.Memory.Retrieval.CandidateLimit <= 0 {
+		cfg.Memory.Retrieval.CandidateLimit = DefaultMemoryRetrievalCandidateLimit
+	}
+	if cfg.Memory.Retrieval.RerankLimit <= 0 {
+		cfg.Memory.Retrieval.RerankLimit = DefaultMemoryRetrievalRerankLimit
+	}
+	if cfg.Memory.Embedding.Dimension < 0 {
+		cfg.Memory.Embedding.Dimension = 0
+	}
+	if cfg.Memory.Embedding.TimeoutMs <= 0 {
+		cfg.Memory.Embedding.TimeoutMs = DefaultMemoryEmbeddingTimeoutMs
+	}
+	if cfg.Memory.Embedding.BatchSize <= 0 {
+		cfg.Memory.Embedding.BatchSize = DefaultMemoryEmbeddingBatchSize
+	}
+	if cfg.Memory.Rerank.TimeoutMs <= 0 {
+		cfg.Memory.Rerank.TimeoutMs = DefaultMemoryRerankTimeoutMs
+	}
+	if cfg.Memory.Rerank.TopN <= 0 {
+		cfg.Memory.Rerank.TopN = DefaultMemoryRerankTopN
+	}
 
 	return cfg, nil
+}
+
+func normalizeRetrievalMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", MemoryRetrievalModeClassic:
+		return MemoryRetrievalModeClassic
+	case MemoryRetrievalModeEnhanced:
+		return MemoryRetrievalModeEnhanced
+	default:
+		return MemoryRetrievalModeClassic
+	}
 }
 
 func SaveConfig(cfg *Config) error {

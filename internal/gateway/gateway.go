@@ -94,17 +94,19 @@ func newRuntime(cfg *config.Config, sysPrompt string, skillRegs []api.SkillRegis
 }
 
 type Gateway struct {
-	cfg        *config.Config
-	bus        *bus.MessageBus
-	runtime    Runtime
-	channels   *channel.ChannelManager
-	cron       *cron.Service
-	hb         *heartbeat.Service
-	memEngine  *memory.Engine
-	memLLM     memory.LLMClient
-	extraction *memory.ExtractionService
-	skillRegs  []api.SkillRegistration
-	signalChan chan os.Signal // for testing
+	cfg                *config.Config
+	bus                *bus.MessageBus
+	runtime            Runtime
+	channels           *channel.ChannelManager
+	cron               *cron.Service
+	hb                 *heartbeat.Service
+	memEngine          *memory.Engine
+	memLLM             memory.LLMClient
+	extraction         *memory.ExtractionService
+	retrieveClassicFn  func(string) ([]memory.Memory, error)
+	retrieveEnhancedFn func(string) ([]memory.Memory, error)
+	skillRegs          []api.SkillRegistration
+	signalChan         chan os.Signal // for testing
 }
 
 // New creates a Gateway with default options
@@ -146,6 +148,25 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Gateway, error) {
 	} else {
 		g.memEngine.SetKnownProjects(projects)
 	}
+
+	g.memEngine.SetRetrievalConfig(g.retrievalConfigForMode(config.MemoryRetrievalModeClassic))
+	if strings.EqualFold(strings.TrimSpace(g.cfg.Memory.Retrieval.Mode), config.MemoryRetrievalModeEnhanced) {
+		g.memEngine.SetQueryExpander(memory.NewQueryExpander(cfg))
+		if cfg.Memory.Rerank.Enabled {
+			g.memEngine.SetReranker(memory.NewReranker(cfg))
+		}
+	}
+	if cfg.Memory.Embedding.Enabled {
+		embeddingModel := strings.TrimSpace(cfg.Memory.Embedding.Model)
+		if embeddingModel == "" {
+			embeddingModel = strings.TrimSpace(cfg.Memory.Model)
+		}
+		if embeddingModel == "" {
+			embeddingModel = strings.TrimSpace(cfg.Agent.Model)
+		}
+		g.memEngine.SetEmbedder(memory.NewEmbedder(cfg), embeddingModel, cfg.Memory.Embedding.TimeoutMs)
+	}
+	g.ensureRetrievalFns()
 
 	g.memLLM = memory.NewLLMClient(cfg)
 	g.extraction = memory.NewExtractionService(g.memEngine, g.memLLM, cfg.Memory.Extraction)
@@ -366,8 +387,8 @@ func (g *Gateway) processLoop(ctx context.Context) {
 			}
 
 			prompt := msg.Content
-			if g.memEngine != nil && memory.ShouldRetrieve(msg.Content) {
-				memories, err := g.memEngine.Retrieve(msg.Content)
+			if memory.ShouldRetrieve(msg.Content) {
+				memories, err := g.retrieveMemories(msg.Content)
 				if err != nil {
 					log.Printf("[memory] retrieve warning: %v", err)
 				} else if len(memories) > 0 {
@@ -397,6 +418,88 @@ func (g *Gateway) processLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (g *Gateway) ensureRetrievalFns() {
+	if g.memEngine == nil {
+		return
+	}
+	if g.retrieveClassicFn == nil {
+		g.retrieveClassicFn = func(msg string) ([]memory.Memory, error) {
+			g.memEngine.SetRetrievalConfig(g.retrievalConfigForMode(config.MemoryRetrievalModeClassic))
+			return g.memEngine.Retrieve(msg)
+		}
+	}
+	if g.retrieveEnhancedFn == nil {
+		g.retrieveEnhancedFn = func(msg string) ([]memory.Memory, error) {
+			g.memEngine.SetRetrievalConfig(g.retrievalConfigForMode(config.MemoryRetrievalModeEnhanced))
+			return g.memEngine.Retrieve(msg)
+		}
+	}
+}
+
+func (g *Gateway) retrievalConfigForMode(mode string) config.RetrievalConfig {
+	retrievalCfg := config.RetrievalConfig{
+		Mode:                  config.DefaultMemoryRetrievalMode,
+		StrongSignalThreshold: config.DefaultMemoryStrongSignalThreshold,
+		StrongSignalGap:       config.DefaultMemoryStrongSignalGap,
+		CandidateLimit:        config.DefaultMemoryRetrievalCandidateLimit,
+		RerankLimit:           config.DefaultMemoryRetrievalRerankLimit,
+	}
+	if g.cfg != nil {
+		retrievalCfg = g.cfg.Memory.Retrieval
+	}
+
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case config.MemoryRetrievalModeEnhanced:
+		retrievalCfg.Mode = config.MemoryRetrievalModeEnhanced
+	default:
+		retrievalCfg.Mode = config.MemoryRetrievalModeClassic
+	}
+
+	if retrievalCfg.StrongSignalThreshold < 0 {
+		retrievalCfg.StrongSignalThreshold = config.DefaultMemoryStrongSignalThreshold
+	}
+	if retrievalCfg.StrongSignalGap < 0 {
+		retrievalCfg.StrongSignalGap = config.DefaultMemoryStrongSignalGap
+	}
+	if retrievalCfg.CandidateLimit <= 0 {
+		retrievalCfg.CandidateLimit = config.DefaultMemoryRetrievalCandidateLimit
+	}
+	if retrievalCfg.RerankLimit <= 0 {
+		retrievalCfg.RerankLimit = config.DefaultMemoryRetrievalRerankLimit
+	}
+
+	return retrievalCfg
+}
+
+func (g *Gateway) retrieveMemories(msg string) ([]memory.Memory, error) {
+	g.ensureRetrievalFns()
+
+	mode := config.MemoryRetrievalModeClassic
+	if g.cfg != nil {
+		mode = strings.ToLower(strings.TrimSpace(g.cfg.Memory.Retrieval.Mode))
+	}
+
+	if mode == config.MemoryRetrievalModeEnhanced {
+		if g.retrieveEnhancedFn == nil {
+			return nil, nil
+		}
+		memories, err := g.retrieveEnhancedFn(msg)
+		if err == nil {
+			return memories, nil
+		}
+		log.Printf("[memory] enhanced retrieve warning, falling back to classic: %v", err)
+		if g.retrieveClassicFn == nil {
+			return nil, nil
+		}
+		return g.retrieveClassicFn(msg)
+	}
+
+	if g.retrieveClassicFn == nil {
+		return nil, nil
+	}
+	return g.retrieveClassicFn(msg)
 }
 
 func (g *Gateway) Shutdown() error {

@@ -4,8 +4,33 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	volume := filepath.VolumeName(home)
+	if volume == "" {
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+		return
+	}
+
+	t.Setenv("HOMEDRIVE", volume)
+	homePath := strings.TrimPrefix(home, volume)
+	homePath = strings.ReplaceAll(homePath, "/", `\`)
+	if homePath == "" {
+		homePath = `\`
+	}
+	if !strings.HasPrefix(homePath, `\`) {
+		homePath = `\` + homePath
+	}
+	t.Setenv("HOMEPATH", homePath)
+}
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -59,9 +84,7 @@ func TestDefaultConfig(t *testing.T) {
 func TestLoadConfig_NoFile(t *testing.T) {
 	// Override config dir to a temp location
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	// Clear any env overrides
 	t.Setenv("MYCLAW_API_KEY", "")
@@ -79,9 +102,7 @@ func TestLoadConfig_NoFile(t *testing.T) {
 
 func TestLoadConfig_FromFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	// Clear env overrides
 	t.Setenv("MYCLAW_API_KEY", "")
@@ -121,9 +142,7 @@ func TestLoadConfig_FromFile(t *testing.T) {
 
 func TestLoadConfig_EnvOverrides(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	tests := []struct {
 		name    string
@@ -156,9 +175,7 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 
 func TestLoadConfig_EnvPriority(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	// MYCLAW_API_KEY takes priority over ANTHROPIC_API_KEY
 	t.Setenv("MYCLAW_API_KEY", "myclaw-wins")
@@ -176,9 +193,7 @@ func TestLoadConfig_EnvPriority(t *testing.T) {
 
 func TestLoadConfig_BaseURLEnv(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	t.Setenv("MYCLAW_API_KEY", "key")
 	t.Setenv("ANTHROPIC_BASE_URL", "http://localhost:8080")
@@ -195,9 +210,7 @@ func TestLoadConfig_BaseURLEnv(t *testing.T) {
 
 func TestSaveConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.Provider.APIKey = "test-key"
@@ -222,9 +235,7 @@ func TestSaveConfig(t *testing.T) {
 
 func TestLoadConfig_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	cfgDir := filepath.Join(tmpDir, ".myclaw")
 	os.MkdirAll(cfgDir, 0755)
@@ -238,9 +249,7 @@ func TestLoadConfig_InvalidJSON(t *testing.T) {
 
 func TestLoadConfig_EmptyWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	cfgDir := filepath.Join(tmpDir, ".myclaw")
 	os.MkdirAll(cfgDir, 0755)
@@ -265,9 +274,7 @@ func TestLoadConfig_EmptyWorkspace(t *testing.T) {
 
 func TestLoadConfig_TelegramToken(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	t.Setenv("MYCLAW_TELEGRAM_TOKEN", "test-telegram-token")
 
@@ -282,9 +289,7 @@ func TestLoadConfig_TelegramToken(t *testing.T) {
 
 func TestLoadConfig_MYCLAWBaseURL(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	t.Setenv("MYCLAW_BASE_URL", "http://myclaw.local")
 	t.Setenv("ANTHROPIC_BASE_URL", "http://anthropic.local")
@@ -301,9 +306,7 @@ func TestLoadConfig_MYCLAWBaseURL(t *testing.T) {
 
 func TestLoadConfig_WeComEnvOverrides(t *testing.T) {
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	setTestHome(t, tmpDir)
 
 	t.Setenv("MYCLAW_WECOM_TOKEN", "wecom-token")
 	t.Setenv("MYCLAW_WECOM_ENCODING_AES_KEY", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")
@@ -322,5 +325,217 @@ func TestLoadConfig_WeComEnvOverrides(t *testing.T) {
 	}
 	if cfg.Channels.WeCom.ReceiveID != "wecom-receive-id" {
 		t.Errorf("wecom receiveId = %q, want wecom-receive-id", cfg.Channels.WeCom.ReceiveID)
+	}
+}
+
+func TestDefaultConfigMemoryRetrievalClassic(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.Memory.Retrieval.Mode != MemoryRetrievalModeClassic {
+		t.Errorf("memory.retrieval.mode = %q, want %q", cfg.Memory.Retrieval.Mode, MemoryRetrievalModeClassic)
+	}
+	if cfg.Memory.Embedding.Enabled {
+		t.Error("memory.embedding.enabled should be false by default")
+	}
+	if cfg.Memory.Rerank.Enabled {
+		t.Error("memory.rerank.enabled should be false by default")
+	}
+	if cfg.Memory.Retrieval.CandidateLimit != DefaultMemoryRetrievalCandidateLimit {
+		t.Errorf("memory.retrieval.candidateLimit = %d, want %d", cfg.Memory.Retrieval.CandidateLimit, DefaultMemoryRetrievalCandidateLimit)
+	}
+	if cfg.Memory.Retrieval.RerankLimit != DefaultMemoryRetrievalRerankLimit {
+		t.Errorf("memory.retrieval.rerankLimit = %d, want %d", cfg.Memory.Retrieval.RerankLimit, DefaultMemoryRetrievalRerankLimit)
+	}
+}
+
+func TestLoadConfigBackwardCompatibleMemoryDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	setTestHome(t, tmpDir)
+
+	t.Setenv("MYCLAW_MEMORY_MODEL", "")
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_MODE", "")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_ENABLED", "")
+	t.Setenv("MYCLAW_MEMORY_RERANK_ENABLED", "")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_TIMEOUT_MS", "")
+	t.Setenv("MYCLAW_MEMORY_RERANK_TIMEOUT_MS", "")
+
+	cfgDir := filepath.Join(tmpDir, ".myclaw")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+
+	legacyCfg := map[string]any{
+		"memory": map[string]any{
+			"enabled":   true,
+			"model":     "legacy-memory-model",
+			"maxTokens": 2048,
+			"extraction": map[string]any{
+				"quietGap":    "2m",
+				"tokenBudget": 0.5,
+				"dailyFlush":  "04:00",
+			},
+		},
+	}
+	data, err := json.MarshalIndent(legacyCfg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal legacy config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), data, 0644); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if cfg.Memory.Model != "legacy-memory-model" {
+		t.Errorf("memory.model = %q, want legacy-memory-model", cfg.Memory.Model)
+	}
+	if cfg.Memory.Retrieval.Mode != MemoryRetrievalModeClassic {
+		t.Errorf("memory.retrieval.mode = %q, want %q", cfg.Memory.Retrieval.Mode, MemoryRetrievalModeClassic)
+	}
+	if cfg.Memory.Embedding.Enabled {
+		t.Error("memory.embedding.enabled should remain false for legacy config")
+	}
+	if cfg.Memory.Rerank.Enabled {
+		t.Error("memory.rerank.enabled should remain false for legacy config")
+	}
+	if cfg.Memory.Embedding.TimeoutMs != DefaultMemoryEmbeddingTimeoutMs {
+		t.Errorf("memory.embedding.timeoutMs = %d, want %d", cfg.Memory.Embedding.TimeoutMs, DefaultMemoryEmbeddingTimeoutMs)
+	}
+	if cfg.Memory.Rerank.TimeoutMs != DefaultMemoryRerankTimeoutMs {
+		t.Errorf("memory.rerank.timeoutMs = %d, want %d", cfg.Memory.Rerank.TimeoutMs, DefaultMemoryRerankTimeoutMs)
+	}
+}
+
+func TestLoadConfigMemoryRetrievalEnvOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	setTestHome(t, tmpDir)
+
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_MODE", "enhanced")
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_STRONG_SIGNAL_THRESHOLD", "0.92")
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_STRONG_SIGNAL_GAP", "0.25")
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_CANDIDATE_LIMIT", "64")
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_RERANK_LIMIT", "24")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_ENABLED", "true")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_PROVIDER", "ollama")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_BASE_URL", "http://localhost:11434/v1")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_API_KEY", "embed-key")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_MODEL", "nomic-embed-text")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_DIMENSION", "768")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_TIMEOUT_MS", "45000")
+	t.Setenv("MYCLAW_MEMORY_EMBEDDING_BATCH_SIZE", "32")
+	t.Setenv("MYCLAW_MEMORY_RERANK_ENABLED", "true")
+	t.Setenv("MYCLAW_MEMORY_RERANK_PROVIDER", "api")
+	t.Setenv("MYCLAW_MEMORY_RERANK_BASE_URL", "https://rerank.example.com/v1")
+	t.Setenv("MYCLAW_MEMORY_RERANK_API_KEY", "rerank-key")
+	t.Setenv("MYCLAW_MEMORY_RERANK_MODEL", "rerank-v1")
+	t.Setenv("MYCLAW_MEMORY_RERANK_TIMEOUT_MS", "12000")
+	t.Setenv("MYCLAW_MEMORY_RERANK_TOP_N", "12")
+	t.Setenv("MYCLAW_MEMORY_RERANK_MODE", "api")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if cfg.Memory.Retrieval.Mode != MemoryRetrievalModeEnhanced {
+		t.Errorf("memory.retrieval.mode = %q, want %q", cfg.Memory.Retrieval.Mode, MemoryRetrievalModeEnhanced)
+	}
+	if cfg.Memory.Retrieval.StrongSignalThreshold != 0.92 {
+		t.Errorf("memory.retrieval.strongSignalThreshold = %v, want 0.92", cfg.Memory.Retrieval.StrongSignalThreshold)
+	}
+	if cfg.Memory.Retrieval.StrongSignalGap != 0.25 {
+		t.Errorf("memory.retrieval.strongSignalGap = %v, want 0.25", cfg.Memory.Retrieval.StrongSignalGap)
+	}
+	if cfg.Memory.Retrieval.CandidateLimit != 64 {
+		t.Errorf("memory.retrieval.candidateLimit = %d, want 64", cfg.Memory.Retrieval.CandidateLimit)
+	}
+	if cfg.Memory.Retrieval.RerankLimit != 24 {
+		t.Errorf("memory.retrieval.rerankLimit = %d, want 24", cfg.Memory.Retrieval.RerankLimit)
+	}
+	if !cfg.Memory.Embedding.Enabled {
+		t.Error("memory.embedding.enabled = false, want true")
+	}
+	if cfg.Memory.Embedding.Provider != "ollama" {
+		t.Errorf("memory.embedding.provider = %q, want ollama", cfg.Memory.Embedding.Provider)
+	}
+	if cfg.Memory.Embedding.BaseURL != "http://localhost:11434/v1" {
+		t.Errorf("memory.embedding.baseUrl = %q, want http://localhost:11434/v1", cfg.Memory.Embedding.BaseURL)
+	}
+	if cfg.Memory.Embedding.APIKey != "embed-key" {
+		t.Errorf("memory.embedding.apiKey = %q, want embed-key", cfg.Memory.Embedding.APIKey)
+	}
+	if cfg.Memory.Embedding.Model != "nomic-embed-text" {
+		t.Errorf("memory.embedding.model = %q, want nomic-embed-text", cfg.Memory.Embedding.Model)
+	}
+	if cfg.Memory.Embedding.Dimension != 768 {
+		t.Errorf("memory.embedding.dimension = %d, want 768", cfg.Memory.Embedding.Dimension)
+	}
+	if cfg.Memory.Embedding.TimeoutMs != 45000 {
+		t.Errorf("memory.embedding.timeoutMs = %d, want 45000", cfg.Memory.Embedding.TimeoutMs)
+	}
+	if cfg.Memory.Embedding.BatchSize != 32 {
+		t.Errorf("memory.embedding.batchSize = %d, want 32", cfg.Memory.Embedding.BatchSize)
+	}
+	if !cfg.Memory.Rerank.Enabled {
+		t.Error("memory.rerank.enabled = false, want true")
+	}
+	if cfg.Memory.Rerank.Provider != "api" {
+		t.Errorf("memory.rerank.provider = %q, want api", cfg.Memory.Rerank.Provider)
+	}
+	if cfg.Memory.Rerank.BaseURL != "https://rerank.example.com/v1" {
+		t.Errorf("memory.rerank.baseUrl = %q, want https://rerank.example.com/v1", cfg.Memory.Rerank.BaseURL)
+	}
+	if cfg.Memory.Rerank.APIKey != "rerank-key" {
+		t.Errorf("memory.rerank.apiKey = %q, want rerank-key", cfg.Memory.Rerank.APIKey)
+	}
+	if cfg.Memory.Rerank.Model != "rerank-v1" {
+		t.Errorf("memory.rerank.model = %q, want rerank-v1", cfg.Memory.Rerank.Model)
+	}
+	if cfg.Memory.Rerank.TimeoutMs != 12000 {
+		t.Errorf("memory.rerank.timeoutMs = %d, want 12000", cfg.Memory.Rerank.TimeoutMs)
+	}
+	if cfg.Memory.Rerank.TopN != 12 {
+		t.Errorf("memory.rerank.topN = %d, want 12", cfg.Memory.Rerank.TopN)
+	}
+	if cfg.Memory.Rerank.Mode != "api" {
+		t.Errorf("memory.rerank.mode = %q, want api", cfg.Memory.Rerank.Mode)
+	}
+}
+
+func TestLoadConfigInvalidRetrievalModeFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	setTestHome(t, tmpDir)
+	t.Setenv("MYCLAW_MEMORY_RETRIEVAL_MODE", "")
+
+	cfgDir := filepath.Join(tmpDir, ".myclaw")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+
+	testCfg := map[string]any{
+		"memory": map[string]any{
+			"retrieval": map[string]any{
+				"mode": "unsupported",
+			},
+		},
+	}
+	data, err := json.MarshalIndent(testCfg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), data, 0644); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if cfg.Memory.Retrieval.Mode != MemoryRetrievalModeClassic {
+		t.Errorf("memory.retrieval.mode = %q, want fallback %q", cfg.Memory.Retrieval.Mode, MemoryRetrievalModeClassic)
 	}
 }

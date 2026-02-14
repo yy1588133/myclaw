@@ -139,6 +139,7 @@ func TestRunOnboard(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Clear API key env vars
@@ -187,6 +188,7 @@ func TestRunOnboard_AlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Create existing config
@@ -228,6 +230,7 @@ func TestRunStatus(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Clear API key env vars
@@ -276,6 +279,7 @@ func TestRunStatus_WithAPIKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Set API key
@@ -389,6 +393,7 @@ func TestRunStatus_WorkspaceNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Create config with non-existent workspace
@@ -455,6 +460,7 @@ func TestRunAgent_NoAPIKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Clear API key env vars
@@ -476,6 +482,7 @@ func TestRunGateway_NoAPIKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Clear API key env vars

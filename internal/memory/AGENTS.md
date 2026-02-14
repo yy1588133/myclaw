@@ -45,6 +45,8 @@ extraction_buffer (id, channel, sender_id, role, content, token_count, created_a
 | Change LLM prompts | `llm.go` — `extractionPrompt`, `dailyCompressPrompt`, `weeklyCompressPrompt`, `profileUpdatePrompt` |
 | Debug migration | `migrate.go:MigrateFromFiles()` — dedup checks via `source='migration'` |
 | Add new tier | `engine.go` — follow WriteTier1/WriteTier2/WriteTier3 pattern, add schema in `initSchema()` |
+| Investigate retrieval mode fallback | `gateway.go:retrieveMemories()` + `retrieval.go:Retrieve()` |
+| Investigate embedding backfill | `backfill.go:BackfillEmbeddings()` + `queryTier2MissingEmbeddings()` |
 
 ## DATA FLOW
 ```
@@ -71,6 +73,78 @@ WeeklyDeepCompress (cron Mon 04:00)
 - **Categories**: `identity`, `config`, `credential`, `decision`, `solution`, `event`, `conversation`, `temp`, `debug` — each has a distinct decay curve.
 - **Token estimation**: `estimateTokens()` uses heuristic: Chinese chars × 1.5 + English words × 0.75.
 - **Retrieval gating**: `ShouldRetrieve()` skips short/code/ack messages and triggers on question/memory keywords (Chinese + English).
+
+## OPERATOR RUNBOOK
+
+### Retrieval rollout defaults
+- Default mode is `memory.retrieval.mode=classic`.
+- `enhanced` retrieval is opt-in and should be enabled intentionally per environment.
+- Invalid/unknown mode values are normalized to `classic`.
+
+### Configure embedding and rerank providers
+
+Minimal local setup (Ollama embedding + optional API rerank):
+
+```json
+{
+  "memory": {
+    "retrieval": {"mode": "enhanced"},
+    "embedding": {
+      "enabled": true,
+      "provider": "ollama",
+      "baseUrl": "http://127.0.0.1:11434",
+      "model": "nomic-embed-text",
+      "dimension": 768,
+      "timeoutMs": 30000,
+      "batchSize": 16
+    },
+    "rerank": {
+      "enabled": true,
+      "provider": "api",
+      "baseUrl": "https://rerank.example.com",
+      "apiKey": "${RERANK_API_KEY}",
+      "model": "bge-reranker-v2-m3",
+      "timeoutMs": 30000,
+      "topN": 8
+    }
+  }
+}
+```
+
+Remote API setup (embedding + rerank):
+
+```json
+{
+  "memory": {
+    "retrieval": {"mode": "enhanced"},
+    "embedding": {
+      "enabled": true,
+      "provider": "api",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "${EMBEDDING_API_KEY}",
+      "model": "text-embedding-3-large"
+    },
+    "rerank": {
+      "enabled": true,
+      "provider": "api",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "${RERANK_API_KEY}",
+      "model": "rerank-v1",
+      "topN": 8
+    }
+  }
+}
+```
+
+### Migration and backfill operations
+- Legacy migration is automatic on gateway startup when the SQLite DB is empty (`MigrateFromFiles()` imports `MEMORY.md` and daily logs).
+- `BackfillEmbeddings(ctx, batchSize)` is an idempotent operation that fills missing embeddings only (`embedding IS NULL OR embedding_dim = 0`) in deterministic `id ASC` order.
+- Backfill is currently an engine-level maintenance operation; run from a helper/one-off program after configuring the embedder.
+
+### Fail-open behavior (read and write paths)
+- Retrieval fail-open: in `enhanced` mode, errors trigger fallback to `classic`; if retrieval still fails, runtime reply continues without memory context.
+- Write fail-open: Tier2 insert succeeds even when embedding generation fails or embedder is unavailable.
+- Embedding generation is non-blocking: write first, then async embed/update.
 
 ## ANTI-PATTERNS
 - **Never** write to `memories` table without going through `Engine` methods — triggers must fire for FTS sync.

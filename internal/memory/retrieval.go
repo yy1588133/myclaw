@@ -1,12 +1,15 @@
 package memory
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/stellarlinkco/myclaw/internal/config"
 )
 
 var (
@@ -14,6 +17,11 @@ var (
 	cnWordRegex    = regexp.MustCompile(`[\p{Han}]{2,}`)
 	enWordRegex    = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9_\-]{2,}`)
 )
+
+type scoredFTSMatch struct {
+	Memory Memory
+	Score  float64
+}
 
 func shouldRetrieve(msg string) bool {
 	trimmed := strings.TrimSpace(msg)
@@ -126,7 +134,18 @@ func relevanceScore(mem Memory, daysSinceAccess float64) float64 {
 }
 
 func (e *Engine) Retrieve(msg string) ([]Memory, error) {
-	keywords := extractKeywords(msg)
+	retrievalCfg := e.retrievalConfigSnapshot()
+	if retrievalCfg.Mode == config.MemoryRetrievalModeEnhanced {
+		results, err := e.retrieveEnhanced(msg)
+		if err == nil {
+			return results, nil
+		}
+	}
+	return e.retrieveClassic(msg)
+}
+
+func (e *Engine) retrieveClassic(msg string) ([]Memory, error) {
+	keywords := sanitizeFTSTokens(extractKeywords(msg))
 	project := matchProject(msg, e.knownProjectsSnapshot())
 
 	base, err := e.queryRetrieveBase(project)
@@ -142,40 +161,220 @@ func (e *Engine) Retrieve(msg string) ([]Memory, error) {
 	}
 
 	if len(results) < 5 && len(keywords) > 0 {
-		ftsQuery := strings.Join(keywords, " OR ")
-		extra, err := e.SearchFTS(ftsQuery, 10)
-		if err == nil {
-			for _, mem := range extra {
-				if _, ok := seen[mem.ID]; ok {
-					continue
+		retrievalCfg := e.retrievalConfigSnapshot()
+		stage1Matches, stage1Err := e.searchFTSScored(keywords, 10)
+		if stage1Err == nil && isStrongSignalMatch(stage1Matches, retrievalCfg) {
+			results = appendUniqueScoredMatches(results, seen, stage1Matches)
+		} else {
+			expandedTokens := keywords
+			if expander := e.queryExpanderSnapshot(); expander != nil {
+				if expansion, err := expander.Expand(msg); err == nil && expansion != nil {
+					expandedTokens = mergeUniqueTokens(expandedTokens, expansion.allTokens())
 				}
-				seen[mem.ID] = struct{}{}
-				results = append(results, mem)
+			}
+
+			extraMatches, err := e.searchFTSScored(expandedTokens, 10)
+			if err == nil {
+				results = appendUniqueScoredMatches(results, seen, extraMatches)
 			}
 		}
 	}
 
-	now := time.Now().UTC()
-	sort.Slice(results, func(i, j int) bool {
-		di := daysSince(results[i].LastAccessed, now)
-		dj := daysSince(results[j].LastAccessed, now)
-		si := relevanceScore(results[i], di)
-		sj := relevanceScore(results[j], dj)
-		if si == sj {
-			return results[i].Importance > results[j].Importance
-		}
-		return si > sj
-	})
-
-	if len(results) > 5 {
-		results = results[:5]
-	}
+	results = sortAndTrimClassicResults(results, 5)
 
 	for _, mem := range results {
 		_ = e.TouchMemory(mem.ID)
 	}
 
 	return results, nil
+}
+
+func sortAndTrimClassicResults(results []Memory, limit int) []Memory {
+	if len(results) == 0 {
+		return nil
+	}
+
+	sorted := append([]Memory(nil), results...)
+	now := time.Now().UTC()
+	sort.SliceStable(sorted, func(i, j int) bool {
+		di := daysSince(sorted[i].LastAccessed, now)
+		dj := daysSince(sorted[j].LastAccessed, now)
+		si := relevanceScore(sorted[i], di)
+		sj := relevanceScore(sorted[j], dj)
+		if si == sj {
+			if sorted[i].Importance == sorted[j].Importance {
+				return sorted[i].ID < sorted[j].ID
+			}
+			return sorted[i].Importance > sorted[j].Importance
+		}
+		return si > sj
+	})
+
+	if limit > 0 && len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+
+	return sorted
+}
+
+func mergeUniqueTokens(base, extra []string) []string {
+	merged := make([]string, 0, len(base)+len(extra))
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	appendTokens := func(tokens []string) {
+		for _, token := range sanitizeFTSTokens(tokens) {
+			if _, exists := seen[token]; exists {
+				continue
+			}
+			seen[token] = struct{}{}
+			merged = append(merged, token)
+			if len(merged) >= maxFTSTokens {
+				return
+			}
+		}
+	}
+	appendTokens(base)
+	if len(merged) >= maxFTSTokens {
+		return merged
+	}
+	appendTokens(extra)
+	return merged
+}
+
+func (e *Engine) searchFTSScored(tokens []string, limit int) ([]scoredFTSMatch, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	matchQuery := buildFTSMatchQuery(tokens)
+	if matchQuery == "" {
+		return nil, nil
+	}
+
+	rows, err := e.db.Query(`
+		SELECT m.id, m.tier, m.project, m.topic, m.category, m.content, m.importance, m.source,
+		       m.created_at, m.updated_at, m.last_accessed, m.access_count, m.is_archived,
+		       bm25(memories_fts) AS bm25_score
+		FROM memories m
+		JOIN memories_fts f ON m.id = f.rowid
+		WHERE memories_fts MATCH ?
+		  AND m.tier = 2
+		  AND m.is_archived = 0
+		ORDER BY bm25(memories_fts), m.importance DESC
+		LIMIT ?
+	`, matchQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search fts scored: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]scoredFTSMatch, 0)
+	for rows.Next() {
+		item, err := scanScoredFTSMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate fts scored: %w", err)
+	}
+
+	return result, nil
+}
+
+func scanScoredFTSMatch(rows *sql.Rows) (scoredFTSMatch, error) {
+	var m Memory
+	var archived int
+	var score float64
+	if err := rows.Scan(
+		&m.ID,
+		&m.Tier,
+		&m.Project,
+		&m.Topic,
+		&m.Category,
+		&m.Content,
+		&m.Importance,
+		&m.Source,
+		&m.CreatedAt,
+		&m.UpdatedAt,
+		&m.LastAccessed,
+		&m.AccessCount,
+		&archived,
+		&score,
+	); err != nil {
+		return scoredFTSMatch{}, fmt.Errorf("scan scored fts match: %w", err)
+	}
+	m.IsArchived = archived == 1
+	return scoredFTSMatch{Memory: m, Score: score}, nil
+}
+
+func isStrongSignalMatch(matches []scoredFTSMatch, cfg retrievalRuntimeConfig) bool {
+	if len(matches) == 0 {
+		return false
+	}
+
+	rawScores := make([]float64, len(matches))
+	for i, match := range matches {
+		rawScores[i] = match.Score
+	}
+	normalized := normalizeBM25(rawScores)
+	top := normalized[0]
+	next := 0.0
+	if len(normalized) > 1 {
+		next = normalized[1]
+	}
+	gap := top - next
+
+	return top >= cfg.StrongSignalThreshold && gap >= cfg.StrongSignalGap
+}
+
+func normalizeBM25(rawScores []float64) []float64 {
+	if len(rawScores) == 0 {
+		return nil
+	}
+
+	minScore := rawScores[0]
+	maxScore := rawScores[0]
+	for _, score := range rawScores[1:] {
+		if score < minScore {
+			minScore = score
+		}
+		if score > maxScore {
+			maxScore = score
+		}
+	}
+
+	normalized := make([]float64, len(rawScores))
+	if maxScore == minScore {
+		for i := range normalized {
+			normalized[i] = 1
+		}
+		return normalized
+	}
+
+	rangeSize := maxScore - minScore
+	for i, score := range rawScores {
+		norm := 1 - ((score - minScore) / rangeSize)
+		if norm < 0 {
+			norm = 0
+		}
+		if norm > 1 {
+			norm = 1
+		}
+		normalized[i] = norm
+	}
+	return normalized
+}
+
+func appendUniqueScoredMatches(results []Memory, seen map[int64]struct{}, matches []scoredFTSMatch) []Memory {
+	for _, match := range matches {
+		mem := match.Memory
+		if _, exists := seen[mem.ID]; exists {
+			continue
+		}
+		seen[mem.ID] = struct{}{}
+		results = append(results, mem)
+	}
+	return results
 }
 
 func (e *Engine) queryRetrieveBase(project string) ([]Memory, error) {

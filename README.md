@@ -213,6 +213,110 @@ When using OpenAI, set the model to an OpenAI model name (e.g., `gpt-4o`).
 
 > Prefer environment variables over config files for sensitive values like API keys.
 
+## Memory Retrieval & Embedding Configuration
+
+`memory` defaults are conservative for rollout safety:
+
+- `memory.retrieval.mode = "classic"` (default)
+- `memory.embedding.enabled = false` (default)
+- `memory.rerank.enabled = false` (default)
+- `enhanced` retrieval is opt-in
+
+If `memory.retrieval.mode` is invalid, it is normalized to `classic`.
+
+### Retrieval Modes
+
+- `classic`: base Tier2 retrieval + FTS expansion/scoring.
+- `enhanced`: query expansion + hybrid retrieval (FTS + vector) + optional rerank blend.
+
+Fail-open and fallback behavior:
+
+- Enhanced retrieval fallback: if `enhanced` retrieval errors, gateway logs warning and falls back to `classic` retrieval.
+- If retrieval still errors, response generation continues without memory context injection (reply path is not blocked).
+
+### Memory Config Example: local Ollama embedding + optional API rerank
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "model": "gpt-4o-mini",
+    "dbPath": "",
+    "retrieval": {
+      "mode": "enhanced",
+      "strongSignalThreshold": 0.85,
+      "strongSignalGap": 0.15,
+      "candidateLimit": 40,
+      "rerankLimit": 20
+    },
+    "embedding": {
+      "enabled": true,
+      "provider": "ollama",
+      "baseUrl": "http://127.0.0.1:11434",
+      "model": "nomic-embed-text",
+      "dimension": 768,
+      "timeoutMs": 30000,
+      "batchSize": 16
+    },
+    "rerank": {
+      "enabled": true,
+      "provider": "api",
+      "baseUrl": "https://rerank.example.com",
+      "apiKey": "${RERANK_API_KEY}",
+      "model": "bge-reranker-v2-m3",
+      "timeoutMs": 30000,
+      "topN": 8
+    }
+  }
+}
+```
+
+### Memory Config Example: remote API embedding + remote API rerank
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "model": "gpt-4o-mini",
+    "provider": {
+      "type": "openai",
+      "apiKey": "${MEMORY_API_KEY}",
+      "baseUrl": "https://api.example.com/v1"
+    },
+    "retrieval": {
+      "mode": "enhanced"
+    },
+    "embedding": {
+      "enabled": true,
+      "provider": "api",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "${EMBEDDING_API_KEY}",
+      "model": "text-embedding-3-large",
+      "dimension": 3072,
+      "timeoutMs": 30000,
+      "batchSize": 16
+    },
+    "rerank": {
+      "enabled": true,
+      "provider": "api",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "${RERANK_API_KEY}",
+      "model": "rerank-v1",
+      "timeoutMs": 30000,
+      "topN": 8
+    }
+  }
+}
+```
+
+### Migration, Backfill, and Fail-Open Write Path
+
+- **Migration**: on gateway startup, if SQLite memory DB is empty, myclaw runs one-time migration from legacy file memory (`workspace/memory/MEMORY.md` + daily `YYYY-MM-DD.md`).
+- **Backfill**: `BackfillEmbeddings(ctx, batchSize)` fills missing Tier2 embeddings in deterministic `id ASC` order and is idempotent (already-embedded rows are skipped).
+- **Write path fail-open**: Tier2 write persists first; embedding generation is async and non-blocking. If embedder is unavailable or embedding update fails, row write still succeeds.
+
+Backfill is currently an engine operation (no built-in CLI command). Run it from a maintenance helper/one-off tool that initializes `Engine`, sets embedder config, then calls `BackfillEmbeddings`.
+
 ## Channel Setup
 
 ### Telegram

@@ -379,7 +379,7 @@ scripts/autolab/verify.sh
 | `pr-verify` | PR 到 `main`、手动触发 | 严格 PR 关卡：lint/vet/test/race/build/smoke |
 | `secret-audit` | PR 到 `main`、手动触发 | 扫描已跟踪文件与 git 历史中的敏感信息 |
 | `ci` | push/PR 到 `main` | 基础 test + build |
-| `deploy-main` | push 到 `main`、手动触发 | GitHub-hosted runner 通过 SSH 连接生产主机执行部署 |
+| `deploy-main` | push 到 `main`、手动触发 | 通过 `/usr/local/bin/myclaw-deploy-run` 在自托管 runner 部署 |
 | `release` | tag `v*` | 发布 GitHub Release + 多平台二进制 + GHCR 镜像 |
 | `rollback` | 手动触发 | 从目标 ref 创建回滚 PR 分支并触发检查 |
 

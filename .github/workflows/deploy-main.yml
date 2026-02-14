@@ -8,12 +8,73 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
 jobs:
   deploy:
-    runs-on: [self-hosted, Linux, X64, myclaw-host]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
     steps:
-      - name: Deploy on self-hosted runner
+      - name: Validate required deployment secrets
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n /usr/local/bin/myclaw-deploy-run
+          : "${DEPLOY_HOST:?missing secret DEPLOY_HOST}"
+          : "${DEPLOY_USER:?missing secret DEPLOY_USER}"
+          : "${DEPLOY_SSH_KEY:?missing secret DEPLOY_SSH_KEY}"
+
+      - name: Configure SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Configure known hosts
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          if [[ -n "${DEPLOY_KNOWN_HOSTS:-}" ]]; then
+            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" > ~/.ssh/known_hosts
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy on remote host via SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          REMOTE_PATH="${DEPLOY_PATH:-/home/maoyu/apps/myclaw}"
+          SERVICE_NAME="${DEPLOY_SERVICE:-myclaw}"
+
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -euo pipefail; \
+             cd '$REMOTE_PATH'; \
+             git fetch origin; \
+             git pull --ff-only origin main; \
+             if command -v go >/dev/null 2>&1; then GO_BIN=\$(command -v go); \
+             elif [[ -x /usr/local/go/bin/go ]]; then GO_BIN=/usr/local/go/bin/go; \
+             else echo 'Error: go binary not found in PATH or /usr/local/go/bin/go' >&2; exit 1; fi; \
+             \"\$GO_BIN\" build -o ./bin/myclaw ./cmd/myclaw; \
+             sudo -n systemctl restart '$SERVICE_NAME'; \
+             sleep 2; \
+             sudo -n systemctl is-active '$SERVICE_NAME' >/dev/null; \
+             DEPLOYED_SHA=\$(git rev-parse --short HEAD); \
+             echo deploy=ok service='$SERVICE_NAME' sha=\"\$DEPLOYED_SHA\""

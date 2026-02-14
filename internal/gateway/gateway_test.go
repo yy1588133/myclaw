@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -298,6 +299,240 @@ func TestGateway_ProcessLoop(t *testing.T) {
 	}
 
 	cancel()
+}
+
+func TestGatewayClassicModeUsesRetrieve(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{Workspace: tmpDir},
+		Memory: config.MemoryConfig{
+			Retrieval: config.RetrievalConfig{Mode: config.MemoryRetrievalModeClassic},
+		},
+	}
+
+	msgBus := bus.NewMessageBus(10)
+	reqCh := make(chan api.Request, 1)
+	mockRt := &mockRuntime{
+		reqCh: reqCh,
+		response: &api.Response{
+			Result: &api.Result{Output: "classic response"},
+		},
+	}
+
+	classicCalls := 0
+	enhancedCalls := 0
+	g := &Gateway{
+		cfg:     cfg,
+		bus:     msgBus,
+		runtime: mockRt,
+		retrieveClassicFn: func(msg string) ([]memory.Memory, error) {
+			classicCalls++
+			return []memory.Memory{{
+				ID:      1,
+				Project: "myclaw",
+				Topic:   "gateway",
+				Content: "classic memory",
+			}}, nil
+		},
+		retrieveEnhancedFn: func(msg string) ([]memory.Memory, error) {
+			enhancedCalls++
+			return nil, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go g.processLoop(ctx)
+
+	msgBus.Inbound <- bus.InboundMessage{
+		Channel:  "test",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "你记得我之前的设置吗？",
+	}
+
+	select {
+	case req := <-reqCh:
+		if !strings.Contains(req.Prompt, "classic memory") {
+			t.Fatalf("runtime prompt missing classic memory context: %q", req.Prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for runtime request")
+	}
+
+	select {
+	case out := <-msgBus.Outbound:
+		if out.Content != "classic response" {
+			t.Fatalf("outbound content = %q, want classic response", out.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for outbound message")
+	}
+
+	if classicCalls != 1 {
+		t.Fatalf("classic retrieval calls = %d, want 1", classicCalls)
+	}
+	if enhancedCalls != 0 {
+		t.Fatalf("enhanced retrieval calls = %d, want 0", enhancedCalls)
+	}
+}
+
+func TestGatewayEnhancedModeUsesHybridRetrieve(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{Workspace: tmpDir},
+		Memory: config.MemoryConfig{
+			Retrieval: config.RetrievalConfig{Mode: config.MemoryRetrievalModeEnhanced},
+		},
+	}
+
+	msgBus := bus.NewMessageBus(10)
+	reqCh := make(chan api.Request, 1)
+	mockRt := &mockRuntime{
+		reqCh: reqCh,
+		response: &api.Response{
+			Result: &api.Result{Output: "enhanced response"},
+		},
+	}
+
+	classicCalls := 0
+	enhancedCalls := 0
+	g := &Gateway{
+		cfg:     cfg,
+		bus:     msgBus,
+		runtime: mockRt,
+		retrieveClassicFn: func(msg string) ([]memory.Memory, error) {
+			classicCalls++
+			return []memory.Memory{{Content: "classic memory"}}, nil
+		},
+		retrieveEnhancedFn: func(msg string) ([]memory.Memory, error) {
+			enhancedCalls++
+			return []memory.Memory{{
+				ID:      2,
+				Project: "myclaw",
+				Topic:   "hybrid",
+				Content: "enhanced memory",
+			}}, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go g.processLoop(ctx)
+
+	msgBus.Inbound <- bus.InboundMessage{
+		Channel:  "test",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "你记得我之前聊过的检索方案吗？",
+	}
+
+	select {
+	case req := <-reqCh:
+		if !strings.Contains(req.Prompt, "enhanced memory") {
+			t.Fatalf("runtime prompt missing enhanced memory context: %q", req.Prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for runtime request")
+	}
+
+	select {
+	case out := <-msgBus.Outbound:
+		if out.Content != "enhanced response" {
+			t.Fatalf("outbound content = %q, want enhanced response", out.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for outbound message")
+	}
+
+	if enhancedCalls != 1 {
+		t.Fatalf("enhanced retrieval calls = %d, want 1", enhancedCalls)
+	}
+	if classicCalls != 0 {
+		t.Fatalf("classic retrieval calls = %d, want 0", classicCalls)
+	}
+}
+
+func TestGatewayEnhancedFailureFallsBackClassic(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{Workspace: tmpDir},
+		Memory: config.MemoryConfig{
+			Retrieval: config.RetrievalConfig{Mode: config.MemoryRetrievalModeEnhanced},
+		},
+	}
+
+	msgBus := bus.NewMessageBus(10)
+	reqCh := make(chan api.Request, 1)
+	mockRt := &mockRuntime{
+		reqCh: reqCh,
+		response: &api.Response{
+			Result: &api.Result{Output: "fallback response"},
+		},
+	}
+
+	classicCalls := 0
+	enhancedCalls := 0
+	g := &Gateway{
+		cfg:     cfg,
+		bus:     msgBus,
+		runtime: mockRt,
+		retrieveClassicFn: func(msg string) ([]memory.Memory, error) {
+			classicCalls++
+			return []memory.Memory{{
+				ID:      3,
+				Project: "myclaw",
+				Topic:   "fallback",
+				Content: "classic fallback memory",
+			}}, nil
+		},
+		retrieveEnhancedFn: func(msg string) ([]memory.Memory, error) {
+			enhancedCalls++
+			return nil, context.DeadlineExceeded
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go g.processLoop(ctx)
+
+	msgBus.Inbound <- bus.InboundMessage{
+		Channel:  "test",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "你记得我们之前怎么做失败降级吗？",
+	}
+
+	select {
+	case req := <-reqCh:
+		if !strings.Contains(req.Prompt, "classic fallback memory") {
+			t.Fatalf("runtime prompt missing fallback classic memory context: %q", req.Prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for runtime request")
+	}
+
+	select {
+	case out := <-msgBus.Outbound:
+		if out.Content != "fallback response" {
+			t.Fatalf("outbound content = %q, want fallback response", out.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for outbound message")
+	}
+
+	if enhancedCalls != 1 {
+		t.Fatalf("enhanced retrieval calls = %d, want 1", enhancedCalls)
+	}
+	if classicCalls != 1 {
+		t.Fatalf("classic retrieval calls = %d, want 1", classicCalls)
+	}
 }
 
 func TestGateway_ProcessLoop_WithContentBlocks(t *testing.T) {

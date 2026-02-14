@@ -483,7 +483,7 @@ Pipeline order:
 | `pr-verify` | PR to `main`, manual | Strict PR gate: lint/vet/test/race/build/smoke |
 | `secret-audit` | PR to `main`, manual | Secret scan across tracked files and git history |
 | `ci` | push/PR to `main` | Basic test + build |
-| `deploy-main` | push to `main`, manual | GitHub-hosted deploy job via SSH to production host |
+| `deploy-main` | push to `main`, manual | Self-hosted deploy via `/usr/local/bin/myclaw-deploy-run` |
 | `release` | tag `v*` | GitHub release + multi-platform binaries + GHCR image |
 | `rollback` | manual | Create rollback PR branch from target ref and trigger checks |
 

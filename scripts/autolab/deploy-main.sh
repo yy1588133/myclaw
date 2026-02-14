@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROD_REPO_PATH="${PROD_REPO_PATH:-/home/maoyu/apps/myclaw}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_REPO_PATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+PROD_REPO_PATH="${PROD_REPO_PATH:-${DEFAULT_REPO_PATH}}"
 SERVICE_NAME="${SERVICE_NAME:-myclaw}"
 BINARY_PATH="${BINARY_PATH:-${PROD_REPO_PATH}/bin/myclaw}"
 

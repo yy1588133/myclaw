@@ -8,15 +8,27 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/stellarlinkco/myclaw/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
 type Engine struct {
-	db            *sql.DB
-	mu            sync.Mutex
-	knownProjects []string
-	knownMu       sync.RWMutex
+	db                 *sql.DB
+	mu                 sync.Mutex
+	knownProjects      []string
+	knownMu            sync.RWMutex
+	retrievalCfg       retrievalRuntimeConfig
+	queryExpander      QueryExpander
+	reranker           Reranker
+	retrievalMu        sync.RWMutex
+	embeddingMu        sync.RWMutex
+	embedder           Embedder
+	embeddingModel     string
+	embeddingTimeoutMs int
 }
+
+const latestSchemaVersion = 1
 
 func NewEngine(dbPath string) (*Engine, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
@@ -28,12 +40,20 @@ func NewEngine(dbPath string) (*Engine, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	e := &Engine{db: db}
+	e := &Engine{
+		db:                 db,
+		retrievalCfg:       defaultRetrievalRuntimeConfig(),
+		embeddingTimeoutMs: config.DefaultMemoryEmbeddingTimeoutMs,
+	}
 	if err := e.configure(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	if err := e.initSchema(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := e.migrateSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -128,6 +148,151 @@ func (e *Engine) initSchema() error {
 	return nil
 }
 
+func (e *Engine) migrateSchema() error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate schema begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	version, err := schemaVersion(tx)
+	if err != nil {
+		return fmt.Errorf("migrate schema read version: %w", err)
+	}
+	if version < 0 {
+		return fmt.Errorf("migrate schema: invalid schema version %d", version)
+	}
+	if version > latestSchemaVersion {
+		return fmt.Errorf("migrate schema: unsupported schema version %d (latest %d)", version, latestSchemaVersion)
+	}
+	if err := validateSchemaState(tx, version); err != nil {
+		return fmt.Errorf("migrate schema validate v%d: %w", version, err)
+	}
+
+	for nextVersion := version + 1; nextVersion <= latestSchemaVersion; nextVersion++ {
+		switch nextVersion {
+		case 1:
+			if err := migrateSchemaV1(tx); err != nil {
+				return fmt.Errorf("migrate schema v1: %w", err)
+			}
+		default:
+			return fmt.Errorf("migrate schema: no migration registered for version %d", nextVersion)
+		}
+		if err := setSchemaVersion(tx, nextVersion); err != nil {
+			return fmt.Errorf("migrate schema set version %d: %w", nextVersion, err)
+		}
+	}
+
+	if err := validateSchemaState(tx, latestSchemaVersion); err != nil {
+		return fmt.Errorf("migrate schema validate target: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate schema commit: %w", err)
+	}
+	return nil
+}
+
+func schemaVersion(tx *sql.Tx) (int, error) {
+	row := tx.QueryRow(`PRAGMA user_version`)
+	var version int
+	if err := row.Scan(&version); err != nil {
+		return 0, fmt.Errorf("scan user_version: %w", err)
+	}
+	return version, nil
+}
+
+func setSchemaVersion(tx *sql.Tx, version int) error {
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV1(tx *sql.Tx) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "embedding", definition: "BLOB NULL"},
+		{name: "embedding_model", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "embedding_dim", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "embedding_updated_at", definition: "TEXT NOT NULL DEFAULT ''"},
+	}
+
+	for _, column := range columns {
+		if err := addColumnIfMissing(tx, "memories", column.name, column.definition); err != nil {
+			return fmt.Errorf("add column %s: %w", column.name, err)
+		}
+	}
+	return nil
+}
+
+func addColumnIfMissing(tx *sql.Tx, table, column, definition string) error {
+	exists, err := hasColumn(tx, table, column)
+	if err != nil {
+		return fmt.Errorf("check existing column %s.%s: %w", table, column, err)
+	}
+	if exists {
+		return nil
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
+	if _, err := tx.Exec(stmt); err != nil {
+		return fmt.Errorf("alter table add column: %w", err)
+	}
+	return nil
+}
+
+func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return false, fmt.Errorf("scan table_info(%s): %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate table_info(%s): %w", table, err)
+	}
+	return false, nil
+}
+
+func validateSchemaState(tx *sql.Tx, version int) error {
+	if version < 1 {
+		return nil
+	}
+
+	missing := make([]string, 0, 4)
+	for _, column := range []string{"embedding", "embedding_model", "embedding_dim", "embedding_updated_at"} {
+		exists, err := hasColumn(tx, "memories", column)
+		if err != nil {
+			return fmt.Errorf("validate column %s: %w", column, err)
+		}
+		if !exists {
+			missing = append(missing, column)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("schema version %d missing required columns: %s", version, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func (e *Engine) LoadTier1() (string, error) {
 	rows, err := e.db.Query(`
 		SELECT content FROM memories
@@ -175,9 +340,6 @@ func (e *Engine) WriteTier1(entry ProfileEntry) error {
 }
 
 func (e *Engine) WriteTier2(fact FactEntry) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	project := strings.TrimSpace(fact.Project)
 	if project == "" {
 		project = "_global"
@@ -197,14 +359,13 @@ func (e *Engine) WriteTier2(fact FactEntry) error {
 	if importance > 1 {
 		importance = 1
 	}
+	content := strings.TrimSpace(fact.Content)
 
-	_, err := e.db.Exec(`
-		INSERT INTO memories (tier, project, topic, category, content, importance, source)
-		VALUES (2, ?, ?, ?, ?, ?, 'extraction')
-	`, project, topic, category, strings.TrimSpace(fact.Content), importance)
+	memoryID, err := e.insertTier2Row(project, topic, category, content, importance)
 	if err != nil {
-		return fmt.Errorf("write tier2: %w", err)
+		return err
 	}
+	e.scheduleTier2Embedding(memoryID, content)
 	return nil
 }
 
@@ -432,6 +593,42 @@ func (e *Engine) SetKnownProjects(projects []string) {
 		}
 	}
 	e.knownProjects = copyProjects
+}
+
+func (e *Engine) SetRetrievalConfig(cfg config.RetrievalConfig) {
+	e.retrievalMu.Lock()
+	defer e.retrievalMu.Unlock()
+	e.retrievalCfg = normalizeRetrievalRuntimeConfig(cfg)
+}
+
+func (e *Engine) retrievalConfigSnapshot() retrievalRuntimeConfig {
+	e.retrievalMu.RLock()
+	defer e.retrievalMu.RUnlock()
+	return e.retrievalCfg
+}
+
+func (e *Engine) SetQueryExpander(expander QueryExpander) {
+	e.retrievalMu.Lock()
+	defer e.retrievalMu.Unlock()
+	e.queryExpander = expander
+}
+
+func (e *Engine) queryExpanderSnapshot() QueryExpander {
+	e.retrievalMu.RLock()
+	defer e.retrievalMu.RUnlock()
+	return e.queryExpander
+}
+
+func (e *Engine) SetReranker(reranker Reranker) {
+	e.retrievalMu.Lock()
+	defer e.retrievalMu.Unlock()
+	e.reranker = reranker
+}
+
+func (e *Engine) rerankerSnapshot() Reranker {
+	e.retrievalMu.RLock()
+	defer e.retrievalMu.RUnlock()
+	return e.reranker
 }
 
 func (e *Engine) knownProjectsSnapshot() []string {

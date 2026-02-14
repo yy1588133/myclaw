@@ -1,10 +1,15 @@
 package memory
 
 import (
+	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
+
+const testLatestSchemaVersion = 1
 
 func TestNewEngine(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
@@ -49,6 +54,98 @@ func TestInitSchema(t *testing.T) {
 			t.Fatalf("expected trigger %q to exist", trigger)
 		}
 	}
+
+	if version := schemaUserVersion(t, e); version != testLatestSchemaVersion {
+		t.Fatalf("expected user_version=%d, got %d", testLatestSchemaVersion, version)
+	}
+}
+
+func TestMigrateSchemaAddsEmbeddingColumns(t *testing.T) {
+	e, err := NewEngine(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	defer e.Close()
+
+	if version := schemaUserVersion(t, e); version != testLatestSchemaVersion {
+		t.Fatalf("expected user_version=%d, got %d", testLatestSchemaVersion, version)
+	}
+
+	columns := memoriesTableColumns(t, e)
+	assertMemoriesColumn(t, columns, "embedding", "BLOB", false, nil)
+	emptyDefault := "''"
+	assertMemoriesColumn(t, columns, "embedding_model", "TEXT", true, &emptyDefault)
+	zeroDefault := "0"
+	assertMemoriesColumn(t, columns, "embedding_dim", "INTEGER", true, &zeroDefault)
+	assertMemoriesColumn(t, columns, "embedding_updated_at", "TEXT", true, &emptyDefault)
+}
+
+func TestMigrateSchemaIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+
+	e1, err := NewEngine(dbPath)
+	if err != nil {
+		t.Fatalf("NewEngine first open error: %v", err)
+	}
+	if err := e1.Close(); err != nil {
+		t.Fatalf("Close first engine: %v", err)
+	}
+
+	e2, err := NewEngine(dbPath)
+	if err != nil {
+		t.Fatalf("NewEngine second open error: %v", err)
+	}
+	defer e2.Close()
+
+	if version := schemaUserVersion(t, e2); version != testLatestSchemaVersion {
+		t.Fatalf("expected user_version=%d, got %d", testLatestSchemaVersion, version)
+	}
+
+	columns := memoriesTableColumns(t, e2)
+	for _, name := range []string{"embedding", "embedding_model", "embedding_dim", "embedding_updated_at"} {
+		if count := countColumn(columns, name); count != 1 {
+			t.Fatalf("expected column %q count=1, got %d", name, count)
+		}
+	}
+
+	if err := e2.migrateSchema(); err != nil {
+		t.Fatalf("migrateSchema should be idempotent: %v", err)
+	}
+}
+
+func TestMigrateSchemaFromLegacyDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	seedLegacyMemoriesSchema(t, dbPath, 0)
+
+	e, err := NewEngine(dbPath)
+	if err != nil {
+		t.Fatalf("NewEngine upgrade legacy db error: %v", err)
+	}
+	defer e.Close()
+
+	if version := schemaUserVersion(t, e); version != testLatestSchemaVersion {
+		t.Fatalf("expected upgraded user_version=%d, got %d", testLatestSchemaVersion, version)
+	}
+
+	columns := memoriesTableColumns(t, e)
+	for _, name := range []string{"embedding", "embedding_model", "embedding_dim", "embedding_updated_at"} {
+		if count := countColumn(columns, name); count != 1 {
+			t.Fatalf("expected migrated column %q to exist once, got %d", name, count)
+		}
+	}
+}
+
+func TestMigrateSchemaRejectsInvalidState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "corrupt.db")
+	seedLegacyMemoriesSchema(t, dbPath, testLatestSchemaVersion)
+
+	_, err := NewEngine(dbPath)
+	if err == nil {
+		t.Fatal("expected NewEngine to fail for invalid schema state")
+	}
+	if got := err.Error(); !containsAll(got, "migrate schema", "missing required columns") {
+		t.Fatalf("expected migration validation error, got: %v", err)
+	}
 }
 
 func schemaObjectExists(t *testing.T, e *Engine, name, typ string) bool {
@@ -59,6 +156,131 @@ func schemaObjectExists(t *testing.T, e *Engine, name, typ string) bool {
 		t.Fatalf("scan sqlite_master: %v", err)
 	}
 	return count > 0
+}
+
+type memoriesColumn struct {
+	Name     string
+	Type     string
+	NotNull  bool
+	Default  sql.NullString
+	Position int
+}
+
+func schemaUserVersion(t *testing.T, e *Engine) int {
+	t.Helper()
+	row := e.db.QueryRow(`PRAGMA user_version`)
+	var version int
+	if err := row.Scan(&version); err != nil {
+		t.Fatalf("scan schema version: %v", err)
+	}
+	return version
+}
+
+func memoriesTableColumns(t *testing.T, e *Engine) []memoriesColumn {
+	t.Helper()
+	rows, err := e.db.Query(`PRAGMA table_info(memories)`)
+	if err != nil {
+		t.Fatalf("query table_info(memories): %v", err)
+	}
+	defer rows.Close()
+
+	columns := make([]memoriesColumn, 0)
+	for rows.Next() {
+		var (
+			c       memoriesColumn
+			notNull int
+			pk      int
+		)
+		if err := rows.Scan(&c.Position, &c.Name, &c.Type, &notNull, &c.Default, &pk); err != nil {
+			t.Fatalf("scan table_info(memories): %v", err)
+		}
+		c.NotNull = notNull == 1
+		columns = append(columns, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table_info(memories): %v", err)
+	}
+	return columns
+}
+
+func assertMemoriesColumn(t *testing.T, columns []memoriesColumn, name, typ string, notNull bool, defaultValue *string) {
+	t.Helper()
+	for _, col := range columns {
+		if col.Name != name {
+			continue
+		}
+		if col.Type != typ {
+			t.Fatalf("column %q type: expected %q, got %q", name, typ, col.Type)
+		}
+		if col.NotNull != notNull {
+			t.Fatalf("column %q notnull: expected %v, got %v", name, notNull, col.NotNull)
+		}
+		if defaultValue == nil {
+			if col.Default.Valid {
+				t.Fatalf("column %q default: expected NULL, got %q", name, col.Default.String)
+			}
+			return
+		}
+		if !col.Default.Valid {
+			t.Fatalf("column %q default: expected %q, got NULL", name, *defaultValue)
+		}
+		if col.Default.String != *defaultValue {
+			t.Fatalf("column %q default: expected %q, got %q", name, *defaultValue, col.Default.String)
+		}
+		return
+	}
+	t.Fatalf("column %q not found", name)
+}
+
+func countColumn(columns []memoriesColumn, name string) int {
+	count := 0
+	for _, col := range columns {
+		if col.Name == name {
+			count++
+		}
+	}
+	return count
+}
+
+func seedLegacyMemoriesSchema(t *testing.T, dbPath string, userVersion int) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite legacy db: %v", err)
+	}
+	defer db.Close()
+
+	legacySchema := `CREATE TABLE memories (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		tier INTEGER NOT NULL DEFAULT 2,
+		project TEXT NOT NULL DEFAULT '_global',
+		topic TEXT NOT NULL DEFAULT '_general',
+		category TEXT NOT NULL DEFAULT 'event',
+		content TEXT NOT NULL,
+		importance REAL NOT NULL DEFAULT 0.5,
+		source TEXT NOT NULL DEFAULT 'extraction',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		last_accessed TEXT NOT NULL DEFAULT (datetime('now')),
+		access_count INTEGER NOT NULL DEFAULT 0,
+		is_archived INTEGER NOT NULL DEFAULT 0
+	)`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy memories table: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", userVersion)); err != nil {
+		t.Fatalf("set legacy user_version: %v", err)
+	}
+}
+
+func containsAll(s string, want ...string) bool {
+	for _, w := range want {
+		if !strings.Contains(s, w) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestEngineCRUDAndFTS(t *testing.T) {

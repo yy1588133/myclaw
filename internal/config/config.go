@@ -24,6 +24,10 @@ const (
 
 	MemoryRetrievalModeClassic  = "classic"
 	MemoryRetrievalModeEnhanced = "enhanced"
+	ModelReasoningEffortLow     = "low"
+	ModelReasoningEffortMedium  = "medium"
+	ModelReasoningEffortHigh    = "high"
+	ModelReasoningEffortXHigh   = "xhigh"
 
 	DefaultMemoryRetrievalMode           = MemoryRetrievalModeClassic
 	DefaultMemoryStrongSignalThreshold   = 0.85
@@ -51,15 +55,16 @@ type Config struct {
 }
 
 type MemoryConfig struct {
-	Enabled    bool             `json:"enabled"`
-	Model      string           `json:"model,omitempty"`
-	MaxTokens  int              `json:"maxTokens,omitempty"`
-	DBPath     string           `json:"dbPath,omitempty"`
-	Provider   *ProviderConfig  `json:"provider,omitempty"`
-	Extraction ExtractionConfig `json:"extraction"`
-	Retrieval  RetrievalConfig  `json:"retrieval"`
-	Embedding  EmbeddingConfig  `json:"embedding"`
-	Rerank     RerankConfig     `json:"rerank"`
+	Enabled              bool             `json:"enabled"`
+	Model                string           `json:"model,omitempty"`
+	ModelReasoningEffort string           `json:"modelReasoningEffort,omitempty"`
+	MaxTokens            int              `json:"maxTokens,omitempty"`
+	DBPath               string           `json:"dbPath,omitempty"`
+	Provider             *ProviderConfig  `json:"provider,omitempty"`
+	Extraction           ExtractionConfig `json:"extraction"`
+	Retrieval            RetrievalConfig  `json:"retrieval"`
+	Embedding            EmbeddingConfig  `json:"embedding"`
+	Rerank               RerankConfig     `json:"rerank"`
 }
 
 type ExtractionConfig struct {
@@ -99,11 +104,12 @@ type RerankConfig struct {
 }
 
 type AgentConfig struct {
-	Workspace         string  `json:"workspace"`
-	Model             string  `json:"model"`
-	MaxTokens         int     `json:"maxTokens"`
-	Temperature       float64 `json:"temperature"`
-	MaxToolIterations int     `json:"maxToolIterations"`
+	Workspace            string  `json:"workspace"`
+	Model                string  `json:"model"`
+	ModelReasoningEffort string  `json:"modelReasoningEffort,omitempty"`
+	MaxTokens            int     `json:"maxTokens"`
+	Temperature          float64 `json:"temperature"`
+	MaxToolIterations    int     `json:"maxToolIterations"`
 }
 
 type ProviderConfig struct {
@@ -456,6 +462,8 @@ func LoadConfig() (*Config, error) {
 	if cfg.Memory.Extraction.DailyFlush == "" {
 		cfg.Memory.Extraction.DailyFlush = DefaultMemoryDailyFlush
 	}
+	cfg.Agent.ModelReasoningEffort = normalizeModelReasoningEffort(cfg.Agent.ModelReasoningEffort)
+	cfg.Memory.ModelReasoningEffort = normalizeModelReasoningEffort(cfg.Memory.ModelReasoningEffort)
 	cfg.Memory.Retrieval.Mode = normalizeRetrievalMode(cfg.Memory.Retrieval.Mode)
 	if cfg.Memory.Retrieval.StrongSignalThreshold < 0 {
 		cfg.Memory.Retrieval.StrongSignalThreshold = DefaultMemoryStrongSignalThreshold
@@ -488,6 +496,25 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) ModelReasoningEffort() string {
+	if c == nil {
+		return ""
+	}
+	return resolveModelReasoningEffort(c.Memory.ModelReasoningEffort, c.Agent.ModelReasoningEffort)
+}
+
+func resolveModelReasoningEffort(memoryEffort, agentEffort string) string {
+	normalizedMemoryEffort := normalizeModelReasoningEffort(memoryEffort)
+	if normalizedMemoryEffort != "" {
+		return normalizedMemoryEffort
+	}
+	normalizedAgentEffort := normalizeModelReasoningEffort(agentEffort)
+	if normalizedAgentEffort != "" {
+		return normalizedAgentEffort
+	}
+	return ""
+}
+
 func normalizeRetrievalMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", MemoryRetrievalModeClassic:
@@ -496,6 +523,21 @@ func normalizeRetrievalMode(mode string) string {
 		return MemoryRetrievalModeEnhanced
 	default:
 		return MemoryRetrievalModeClassic
+	}
+}
+
+func normalizeModelReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ModelReasoningEffortLow:
+		return ModelReasoningEffortLow
+	case ModelReasoningEffortMedium:
+		return ModelReasoningEffortMedium
+	case ModelReasoningEffortHigh:
+		return ModelReasoningEffortHigh
+	case ModelReasoningEffortXHigh:
+		return ModelReasoningEffortXHigh
+	default:
+		return ""
 	}
 }
 

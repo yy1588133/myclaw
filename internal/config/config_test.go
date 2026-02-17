@@ -539,3 +539,145 @@ func TestLoadConfigInvalidRetrievalModeFallback(t *testing.T) {
 		t.Errorf("memory.retrieval.mode = %q, want fallback %q", cfg.Memory.Retrieval.Mode, MemoryRetrievalModeClassic)
 	}
 }
+
+func TestNormalizeModelReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "low passthrough", input: "low", want: "low"},
+		{name: "trim and lowercase xhigh", input: "  XHIGH  ", want: "xhigh"},
+		{name: "trim tabs and newline medium", input: "\tMeDiuM\n", want: "medium"},
+		{name: "invalid value filtered", input: "turbo", want: ""},
+		{name: "empty value filtered", input: "   ", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeModelReasoningEffort(tt.input); got != tt.want {
+				t.Errorf("normalizeModelReasoningEffort(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigModelReasoningEffortNormalization(t *testing.T) {
+	tests := []struct {
+		name        string
+		agentInput  string
+		memoryInput string
+		wantAgent   string
+		wantMemory  string
+	}{
+		{
+			name:        "normalizes valid values",
+			agentInput:  "  XHIGH  ",
+			memoryInput: "  MeDiuM ",
+			wantAgent:   "xhigh",
+			wantMemory:  "medium",
+		},
+		{
+			name:        "filters invalid values to empty",
+			agentInput:  " turbo ",
+			memoryInput: "  ultra  ",
+			wantAgent:   "",
+			wantMemory:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			setTestHome(t, tmpDir)
+
+			cfgDir := filepath.Join(tmpDir, ".myclaw")
+			if err := os.MkdirAll(cfgDir, 0755); err != nil {
+				t.Fatalf("create config dir: %v", err)
+			}
+
+			testCfg := map[string]any{
+				"agent": map[string]any{
+					"modelReasoningEffort": tt.agentInput,
+				},
+				"memory": map[string]any{
+					"modelReasoningEffort": tt.memoryInput,
+				},
+			}
+			data, err := json.MarshalIndent(testCfg, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), data, 0644); err != nil {
+				t.Fatalf("write config file: %v", err)
+			}
+
+			cfg, err := LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig error: %v", err)
+			}
+
+			if cfg.Agent.ModelReasoningEffort != tt.wantAgent {
+				t.Errorf("agent.modelReasoningEffort = %q, want %q", cfg.Agent.ModelReasoningEffort, tt.wantAgent)
+			}
+			if cfg.Memory.ModelReasoningEffort != tt.wantMemory {
+				t.Errorf("memory.modelReasoningEffort = %q, want %q", cfg.Memory.ModelReasoningEffort, tt.wantMemory)
+			}
+		})
+	}
+}
+
+func TestModelReasoningEffortPrecedence(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "memory override wins",
+			cfg: Config{
+				Agent:  AgentConfig{ModelReasoningEffort: "low"},
+				Memory: MemoryConfig{ModelReasoningEffort: "high"},
+			},
+			want: "high",
+		},
+		{
+			name: "agent default used when memory unset",
+			cfg: Config{
+				Agent:  AgentConfig{ModelReasoningEffort: "medium"},
+				Memory: MemoryConfig{},
+			},
+			want: "medium",
+		},
+		{
+			name: "empty when both unset",
+			cfg: Config{
+				Agent:  AgentConfig{},
+				Memory: MemoryConfig{},
+			},
+			want: "",
+		},
+		{
+			name: "normalizes and filters before precedence",
+			cfg: Config{
+				Agent:  AgentConfig{ModelReasoningEffort: "  XHIGH "},
+				Memory: MemoryConfig{ModelReasoningEffort: " turbo "},
+			},
+			want: "xhigh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotFromMethod := tt.cfg.ModelReasoningEffort()
+			if gotFromMethod != tt.want {
+				t.Errorf("ModelReasoningEffort() = %q, want %q", gotFromMethod, tt.want)
+			}
+
+			gotFromHelper := resolveModelReasoningEffort(tt.cfg.Memory.ModelReasoningEffort, tt.cfg.Agent.ModelReasoningEffort)
+			if gotFromHelper != tt.want {
+				t.Errorf("resolveModelReasoningEffort(memory=%q, agent=%q) = %q, want %q", tt.cfg.Memory.ModelReasoningEffort, tt.cfg.Agent.ModelReasoningEffort, gotFromHelper, tt.want)
+			}
+		})
+	}
+}

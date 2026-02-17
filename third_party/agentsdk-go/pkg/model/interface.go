@@ -81,6 +81,7 @@ type Request struct {
 	SessionID         string
 	MaxTokens         int
 	Temperature       *float64
+	ReasoningEffort   string
 	EnablePromptCache bool // Enable prompt caching for system and recent messages
 }
 

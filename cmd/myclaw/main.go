@@ -40,6 +40,8 @@ func (r *runtimeWrapper) Close() {
 // RuntimeFactory creates a Runtime instance
 type RuntimeFactory func(cfg *config.Config) (Runtime, error)
 
+var newRuntime = api.New
+
 // DefaultRuntimeFactory creates the default agentsdk-go runtime
 func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 	if cfg.Provider.APIKey == "" {
@@ -72,10 +74,11 @@ func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 	switch cfg.Provider.Type {
 	case "openai":
 		provider = &model.OpenAIProvider{
-			APIKey:    cfg.Provider.APIKey,
-			BaseURL:   cfg.Provider.BaseURL,
-			ModelName: cfg.Agent.Model,
-			MaxTokens: cfg.Agent.MaxTokens,
+			APIKey:          cfg.Provider.APIKey,
+			BaseURL:         cfg.Provider.BaseURL,
+			ModelName:       cfg.Agent.Model,
+			MaxTokens:       cfg.Agent.MaxTokens,
+			ReasoningEffort: cfg.ModelReasoningEffort(),
 		}
 	default:
 		provider = &model.AnthropicProvider{
@@ -86,7 +89,7 @@ func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
 		}
 	}
 
-	rt, err := api.New(context.Background(), api.Options{
+	rt, err := newRuntime(context.Background(), api.Options{
 		ProjectRoot:   cfg.Agent.Workspace,
 		ModelFactory:  provider,
 		SystemPrompt:  sysPrompt,

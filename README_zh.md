@@ -151,7 +151,8 @@ workspace/
     "baseUrl": ""
   },
   "agent": {
-    "model": "claude-sonnet-4-5-20250929"
+    "model": "claude-sonnet-4-5-20250929",
+    "modelReasoningEffort": "medium"
   },
   "channels": {
     "telegram": {
@@ -183,9 +184,23 @@ workspace/
       "enabled": true,
       "allowFrom": []
     }
+  },
+  "memory": {
+    "enabled": true,
+    "modelReasoningEffort": "high"
   }
 }
 ```
+
+### 模型推理强度（Reasoning Effort）
+
+- 字段位置：
+  - 全局默认值：`agent.modelReasoningEffort`
+  - Memory 覆盖值：`memory.modelReasoningEffort`
+- 优先级：`memory.modelReasoningEffort` > `agent.modelReasoningEffort` > 空（不传 reasoning 参数）。
+- 本版本可选值：`low`、`medium`、`high`、`xhigh`。
+- Fail-open 行为：若 provider/model 不支持 reasoning 参数，myclaw 会记录 warning，并在不带 reasoning 参数的情况下重试一次。
+- 环境变量：本版本该设置不支持 env var。
 
 ### Provider 类型
 

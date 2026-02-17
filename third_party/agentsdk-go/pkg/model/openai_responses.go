@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -16,12 +17,13 @@ import (
 
 // openaiResponsesModel implements Model using OpenAI's Responses API.
 type openaiResponsesModel struct {
-	responses   openaiResponsesService
-	model       string
-	maxTokens   int
-	maxRetries  int
-	system      string
-	temperature *float64
+	responses       openaiResponsesService
+	model           string
+	maxTokens       int
+	maxRetries      int
+	system          string
+	temperature     *float64
+	reasoningEffort string
 }
 
 type openaiResponsesService interface {
@@ -62,12 +64,13 @@ func NewOpenAIResponses(cfg OpenAIConfig) (Model, error) {
 	}
 
 	return &openaiResponsesModel{
-		responses:   &client.Responses,
-		model:       modelName,
-		maxTokens:   maxTokens,
-		maxRetries:  retries,
-		system:      strings.TrimSpace(cfg.System),
-		temperature: cfg.Temperature,
+		responses:       &client.Responses,
+		model:           modelName,
+		maxTokens:       maxTokens,
+		maxRetries:      retries,
+		system:          strings.TrimSpace(cfg.System),
+		temperature:     cfg.Temperature,
+		reasoningEffort: normalizeReasoningEffort(cfg.ReasoningEffort),
 	}, nil
 }
 
@@ -75,12 +78,24 @@ func NewOpenAIResponses(cfg OpenAIConfig) (Model, error) {
 func (m *openaiResponsesModel) Complete(ctx context.Context, req Request) (*Response, error) {
 	recordModelRequest(ctx, req)
 	var resp *Response
+	reasoningFallbackUsed := false
 	err := m.doWithRetry(ctx, func(ctx context.Context) error {
 		params := m.buildResponsesParams(req)
+		if reasoningFallbackUsed {
+			params.Reasoning.Effort = ""
+		}
 
 		response, err := m.responses.New(ctx, params)
 		if err != nil {
-			return err
+			if !reasoningFallbackUsed && params.Reasoning.Effort != "" && isOpenAIReasoningEffortUnsupported(err) {
+				log.Printf("[model/openai] unsupported reasoning parameter for responses completion, retrying without reasoning effort: %v", err)
+				reasoningFallbackUsed = true
+				params.Reasoning.Effort = ""
+				response, err = m.responses.New(ctx, params)
+			}
+			if err != nil {
+				return err
+			}
 		}
 
 		resp = convertResponsesAPIResponse(response)
@@ -97,10 +112,9 @@ func (m *openaiResponsesModel) CompleteStream(ctx context.Context, req Request, 
 	}
 
 	recordModelRequest(ctx, req)
+	reasoningFallbackUsed := false
 
-	return m.doWithRetry(ctx, func(ctx context.Context) error {
-		params := m.buildResponsesParams(req)
-
+	runStream := func(ctx context.Context, params responses.ResponseNewParams) error {
 		stream := m.responses.NewStreaming(ctx, params)
 		if stream == nil {
 			return errors.New("openai responses stream not available")
@@ -209,6 +223,22 @@ func (m *openaiResponsesModel) CompleteStream(ctx context.Context, req Request, 
 		}
 		recordModelResponse(ctx, resp)
 		return cb(StreamResult{Final: true, Response: resp})
+	}
+
+	return m.doWithRetry(ctx, func(ctx context.Context) error {
+		params := m.buildResponsesParams(req)
+		if reasoningFallbackUsed {
+			params.Reasoning.Effort = ""
+		}
+
+		err := runStream(ctx, params)
+		if err != nil && !reasoningFallbackUsed && params.Reasoning.Effort != "" && isOpenAIReasoningEffortUnsupported(err) {
+			log.Printf("[model/openai] unsupported reasoning parameter for responses stream, retrying without reasoning effort: %v", err)
+			reasoningFallbackUsed = true
+			params.Reasoning.Effort = ""
+			err = runStream(ctx, params)
+		}
+		return err
 	})
 }
 
@@ -271,6 +301,10 @@ func (m *openaiResponsesModel) buildResponsesParams(req Request) responses.Respo
 
 	if sessionID := strings.TrimSpace(req.SessionID); sessionID != "" {
 		params.User = openai.String(sessionID)
+	}
+
+	if reasoningEffort := selectReasoningEffort(m.reasoningEffort, req.ReasoningEffort); reasoningEffort != "" {
+		params.Reasoning.Effort = shared.ReasoningEffort(reasoningEffort)
 	}
 
 	return params

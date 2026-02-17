@@ -116,14 +116,15 @@ func (p *AnthropicProvider) store(m Model) {
 
 // OpenAIProvider caches OpenAI clients with optional TTL.
 type OpenAIProvider struct {
-	APIKey      string
-	BaseURL     string // Optional: for Azure or proxies
-	ModelName   string
-	MaxTokens   int
-	MaxRetries  int
-	System      string
-	Temperature *float64
-	CacheTTL    time.Duration
+	APIKey          string
+	BaseURL         string // Optional: for Azure or proxies
+	ModelName       string
+	MaxTokens       int
+	MaxRetries      int
+	System          string
+	Temperature     *float64
+	ReasoningEffort string
+	CacheTTL        time.Duration
 
 	mu      sync.RWMutex
 	cached  Model
@@ -147,13 +148,14 @@ func (p *OpenAIProvider) Model(ctx context.Context) (Model, error) {
 	}
 
 	mdl, err := NewOpenAI(OpenAIConfig{
-		APIKey:      p.resolveAPIKey(),
-		BaseURL:     strings.TrimSpace(p.BaseURL),
-		Model:       strings.TrimSpace(p.ModelName),
-		MaxTokens:   p.MaxTokens,
-		MaxRetries:  p.MaxRetries,
-		System:      p.System,
-		Temperature: p.Temperature,
+		APIKey:          p.resolveAPIKey(),
+		BaseURL:         strings.TrimSpace(p.BaseURL),
+		Model:           strings.TrimSpace(p.ModelName),
+		MaxTokens:       p.MaxTokens,
+		MaxRetries:      p.MaxRetries,
+		System:          p.System,
+		Temperature:     p.Temperature,
+		ReasoningEffort: p.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, err

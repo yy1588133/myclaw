@@ -151,7 +151,8 @@ Run `make setup` for interactive config, or copy `config.example.json` to `~/.my
     "baseUrl": ""
   },
   "agent": {
-    "model": "claude-sonnet-4-5-20250929"
+    "model": "claude-sonnet-4-5-20250929",
+    "modelReasoningEffort": "medium"
   },
   "channels": {
     "telegram": {
@@ -183,9 +184,23 @@ Run `make setup` for interactive config, or copy `config.example.json` to `~/.my
       "enabled": true,
       "allowFrom": []
     }
+  },
+  "memory": {
+    "enabled": true,
+    "modelReasoningEffort": "high"
   }
 }
 ```
+
+### Model Reasoning Effort
+
+- Field locations:
+  - Global default: `agent.modelReasoningEffort`
+  - Memory override: `memory.modelReasoningEffort`
+- Precedence: `memory.modelReasoningEffort` > `agent.modelReasoningEffort` > empty (omit reasoning parameter).
+- Accepted values in this release: `low`, `medium`, `high`, `xhigh`.
+- Fail-open behavior: if a provider/model does not support the reasoning parameter, myclaw logs a warning and retries once without the reasoning parameter.
+- Environment variables: no env var support for this setting in this release.
 
 ### Provider Types
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cexll/agentsdk-go/pkg/api"
+	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/spf13/cobra"
 	"github.com/stellarlinkco/myclaw/internal/config"
 	"github.com/stellarlinkco/myclaw/internal/memory"
@@ -804,5 +805,88 @@ func TestDefaultRuntimeFactory_NoAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "API key not set") {
 		t.Errorf("error should mention API key: %v", err)
+	}
+}
+
+func TestDefaultRuntimeFactory_OpenAIReasoningEffort_Runtime(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# Agent"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "SOUL.md"), []byte("# Soul"), 0644)
+
+	cfg := &config.Config{
+		Provider: config.ProviderConfig{
+			Type:   "openai",
+			APIKey: "test-key",
+		},
+		Agent: config.AgentConfig{
+			Workspace:            tmpDir,
+			Model:                "gpt-5-mini",
+			ModelReasoningEffort: "low",
+		},
+		Memory: config.MemoryConfig{
+			DBPath:               filepath.Join(t.TempDir(), "memory.db"),
+			ModelReasoningEffort: "high",
+		},
+	}
+
+	origNewRuntime := newRuntime
+	t.Cleanup(func() { newRuntime = origNewRuntime })
+
+	var captured api.Options
+	newRuntime = func(ctx context.Context, opts api.Options) (*api.Runtime, error) {
+		captured = opts
+		return &api.Runtime{}, nil
+	}
+
+	_, err := DefaultRuntimeFactory(cfg)
+	if err != nil {
+		t.Fatalf("DefaultRuntimeFactory error: %v", err)
+	}
+
+	provider, ok := captured.ModelFactory.(*model.OpenAIProvider)
+	if !ok {
+		t.Fatalf("model factory type = %T, want *model.OpenAIProvider", captured.ModelFactory)
+	}
+	if provider.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want %q", provider.ReasoningEffort, "high")
+	}
+}
+
+func TestDefaultRuntimeFactory_AnthropicReasoningEffort_Runtime(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# Agent"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "SOUL.md"), []byte("# Soul"), 0644)
+
+	cfg := &config.Config{
+		Provider: config.ProviderConfig{
+			Type:   "anthropic",
+			APIKey: "test-key",
+		},
+		Agent: config.AgentConfig{
+			Workspace:            tmpDir,
+			Model:                "claude-sonnet-4-5-20250929",
+			ModelReasoningEffort: "high",
+		},
+		Memory: config.MemoryConfig{
+			DBPath: filepath.Join(t.TempDir(), "memory.db"),
+		},
+	}
+
+	origNewRuntime := newRuntime
+	t.Cleanup(func() { newRuntime = origNewRuntime })
+
+	var captured api.Options
+	newRuntime = func(ctx context.Context, opts api.Options) (*api.Runtime, error) {
+		captured = opts
+		return &api.Runtime{}, nil
+	}
+
+	_, err := DefaultRuntimeFactory(cfg)
+	if err != nil {
+		t.Fatalf("DefaultRuntimeFactory error: %v", err)
+	}
+
+	if _, ok := captured.ModelFactory.(*model.AnthropicProvider); !ok {
+		t.Fatalf("model factory type = %T, want *model.AnthropicProvider", captured.ModelFactory)
 	}
 }

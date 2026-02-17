@@ -1005,6 +1005,34 @@ func TestDefaultRuntimeFactory_NoAPIKey(t *testing.T) {
 	_ = err
 }
 
+func TestGatewayReasoningEffortRuntimeOpenAIIncludesGlobal(t *testing.T) {
+	cfg := &config.Config{
+		Provider: config.ProviderConfig{
+			Type:    "openai",
+			APIKey:  "openai-key",
+			BaseURL: "https://example.com/v1",
+		},
+		Agent: config.AgentConfig{
+			Model:                "gpt-5",
+			MaxTokens:            2048,
+			ModelReasoningEffort: "low",
+		},
+		Memory: config.MemoryConfig{
+			ModelReasoningEffort: "high",
+		},
+	}
+
+	provider := runtimeModelFactory(cfg)
+	openaiProvider, ok := provider.(*model.OpenAIProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *model.OpenAIProvider", provider)
+	}
+
+	if openaiProvider.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want high", openaiProvider.ReasoningEffort)
+	}
+}
+
 func TestGateway_CronOnJob(t *testing.T) {
 	tmpDir := t.TempDir()
 

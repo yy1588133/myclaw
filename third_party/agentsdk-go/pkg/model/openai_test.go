@@ -774,6 +774,99 @@ func TestOpenAIModel_SelectModel(t *testing.T) {
 	})
 }
 
+func TestOpenAIModel_BuildParams_ReasoningEffort(t *testing.T) {
+	t.Run("uses model default reasoning effort", func(t *testing.T) {
+		mdl := &openaiModel{
+			model:           "gpt-4o",
+			maxTokens:       4096,
+			reasoningEffort: "medium",
+		}
+
+		params, err := mdl.buildParams(Request{
+			Messages: []Message{{Role: "user", Content: "Hello"}},
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, "medium", string(params.ReasoningEffort))
+	})
+
+	t.Run("request reasoning effort overrides model default", func(t *testing.T) {
+		mdl := &openaiModel{
+			model:           "gpt-4o",
+			maxTokens:       4096,
+			reasoningEffort: "low",
+		}
+
+		params, err := mdl.buildParams(Request{
+			Messages:        []Message{{Role: "user", Content: "Hello"}},
+			ReasoningEffort: "high",
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, "high", string(params.ReasoningEffort))
+	})
+
+	t.Run("empty reasoning effort is omitted", func(t *testing.T) {
+		mdl := &openaiModel{
+			model:     "gpt-4o",
+			maxTokens: 4096,
+		}
+
+		params, err := mdl.buildParams(Request{
+			Messages: []Message{{Role: "user", Content: "Hello"}},
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, "", string(params.ReasoningEffort))
+	})
+}
+
+func TestOpenAIModel_Complete_ReasoningEffortUnsupportedFallback(t *testing.T) {
+	callCount := 0
+	var captured []openai.ChatCompletionNewParams
+
+	mock := &mockOpenAIChatCompletions{
+		newFunc: func(ctx context.Context, params openai.ChatCompletionNewParams, opts ...option.RequestOption) (*openai.ChatCompletion, error) {
+			callCount++
+			captured = append(captured, params)
+
+			if callCount == 1 {
+				return nil, &openai.Error{
+					StatusCode: http.StatusBadRequest,
+					Param:      "reasoning_effort",
+					Message:    "Unsupported parameter: 'reasoning_effort'",
+				}
+			}
+
+			return &openai.ChatCompletion{
+				Choices: []openai.ChatCompletionChoice{{
+					Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"},
+				}},
+			}, nil
+		},
+	}
+
+	mdl := &openaiModel{
+		completions:     mock,
+		model:           "gpt-4o",
+		maxTokens:       4096,
+		maxRetries:      0,
+		reasoningEffort: "high",
+	}
+
+	resp, err := mdl.Complete(context.Background(), Request{
+		Messages: []Message{{Role: "user", Content: "Hello"}},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, 2, callCount)
+	require.Len(t, captured, 2)
+	assert.Equal(t, "high", string(captured[0].ReasoningEffort))
+	assert.Equal(t, "", string(captured[1].ReasoningEffort))
+	assert.Equal(t, "ok", resp.Message.Content)
+}
+
 // Test JSON marshaling of tool call arguments
 func TestToolCallArgumentsJSON(t *testing.T) {
 	args := map[string]any{

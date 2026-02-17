@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"sort"
@@ -18,15 +19,16 @@ import (
 
 // OpenAIConfig configures the OpenAI-backed Model.
 type OpenAIConfig struct {
-	APIKey       string
-	BaseURL      string // Optional: for Azure or proxies
-	Model        string // e.g., "gpt-4o", "gpt-4-turbo"
-	MaxTokens    int
-	MaxRetries   int
-	System       string
-	Temperature  *float64
-	HTTPClient   *http.Client
-	UseResponses bool // true = /responses API, false = /chat/completions
+	APIKey          string
+	BaseURL         string // Optional: for Azure or proxies
+	Model           string // e.g., "gpt-4o", "gpt-4-turbo"
+	MaxTokens       int
+	MaxRetries      int
+	System          string
+	Temperature     *float64
+	ReasoningEffort string
+	HTTPClient      *http.Client
+	UseResponses    bool // true = /responses API, false = /chat/completions
 }
 
 type openaiChatCompletions interface {
@@ -35,12 +37,13 @@ type openaiChatCompletions interface {
 }
 
 type openaiModel struct {
-	completions openaiChatCompletions
-	model       string
-	maxTokens   int
-	maxRetries  int
-	system      string
-	temperature *float64
+	completions     openaiChatCompletions
+	model           string
+	maxTokens       int
+	maxRetries      int
+	system          string
+	temperature     *float64
+	reasoningEffort string
 }
 
 const (
@@ -82,12 +85,13 @@ func NewOpenAI(cfg OpenAIConfig) (Model, error) {
 	}
 
 	return &openaiModel{
-		completions: &client.Chat.Completions,
-		model:       modelName,
-		maxTokens:   maxTokens,
-		maxRetries:  retries,
-		system:      strings.TrimSpace(cfg.System),
-		temperature: cfg.Temperature,
+		completions:     &client.Chat.Completions,
+		model:           modelName,
+		maxTokens:       maxTokens,
+		maxRetries:      retries,
+		system:          strings.TrimSpace(cfg.System),
+		temperature:     cfg.Temperature,
+		reasoningEffort: normalizeReasoningEffort(cfg.ReasoningEffort),
 	}, nil
 }
 
@@ -95,15 +99,27 @@ func NewOpenAI(cfg OpenAIConfig) (Model, error) {
 func (m *openaiModel) Complete(ctx context.Context, req Request) (*Response, error) {
 	recordModelRequest(ctx, req)
 	var resp *Response
+	reasoningFallbackUsed := false
 	err := m.doWithRetry(ctx, func(ctx context.Context) error {
 		params, err := m.buildParams(req)
 		if err != nil {
 			return err
 		}
+		if reasoningFallbackUsed {
+			params.ReasoningEffort = ""
+		}
 
 		completion, err := m.completions.New(ctx, params)
 		if err != nil {
-			return err
+			if !reasoningFallbackUsed && params.ReasoningEffort != "" && isOpenAIReasoningEffortUnsupported(err) {
+				log.Printf("[model/openai] unsupported reasoning parameter for chat completion, retrying without reasoning effort: %v", err)
+				reasoningFallbackUsed = true
+				params.ReasoningEffort = ""
+				completion, err = m.completions.New(ctx, params)
+			}
+			if err != nil {
+				return err
+			}
 		}
 
 		resp = convertOpenAIResponse(completion)
@@ -120,13 +136,9 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 	}
 
 	recordModelRequest(ctx, req)
+	reasoningFallbackUsed := false
 
-	return m.doWithRetry(ctx, func(ctx context.Context) error {
-		params, err := m.buildParams(req)
-		if err != nil {
-			return err
-		}
-
+	runStream := func(ctx context.Context, params openai.ChatCompletionNewParams) error {
 		// Enable usage reporting in stream
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),
@@ -237,6 +249,25 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 		}
 		recordModelResponse(ctx, resp)
 		return cb(StreamResult{Final: true, Response: resp})
+	}
+
+	return m.doWithRetry(ctx, func(ctx context.Context) error {
+		params, err := m.buildParams(req)
+		if err != nil {
+			return err
+		}
+		if reasoningFallbackUsed {
+			params.ReasoningEffort = ""
+		}
+
+		err = runStream(ctx, params)
+		if err != nil && !reasoningFallbackUsed && params.ReasoningEffort != "" && isOpenAIReasoningEffortUnsupported(err) {
+			log.Printf("[model/openai] unsupported reasoning parameter for chat stream, retrying without reasoning effort: %v", err)
+			reasoningFallbackUsed = true
+			params.ReasoningEffort = ""
+			err = runStream(ctx, params)
+		}
+		return err
 	})
 }
 
@@ -300,7 +331,41 @@ func (m *openaiModel) buildParams(req Request) (openai.ChatCompletionNewParams, 
 		params.User = openai.String(sessionID)
 	}
 
+	if reasoningEffort := selectReasoningEffort(m.reasoningEffort, req.ReasoningEffort); reasoningEffort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(reasoningEffort)
+	}
+
 	return params, nil
+}
+
+func normalizeReasoningEffort(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func selectReasoningEffort(modelDefault, reqOverride string) string {
+	if normalized := normalizeReasoningEffort(reqOverride); normalized != "" {
+		return normalized
+	}
+	return normalizeReasoningEffort(modelDefault)
+}
+
+func isOpenAIReasoningEffortUnsupported(err error) bool {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	if apiErr.StatusCode != http.StatusBadRequest && apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+
+	paramName := strings.ToLower(strings.TrimSpace(apiErr.Param))
+	if paramName == "reasoning_effort" || paramName == "reasoning.effort" {
+		return true
+	}
+
+	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
+	return strings.Contains(message, "reasoning_effort") || strings.Contains(message, "reasoning.effort")
 }
 
 func (m *openaiModel) doWithRetry(ctx context.Context, fn func(context.Context) error) error {

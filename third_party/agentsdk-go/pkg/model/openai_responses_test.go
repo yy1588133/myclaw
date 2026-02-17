@@ -873,3 +873,98 @@ func TestOpenAIResponsesModel_BuildResponsesParams(t *testing.T) {
 		assert.Equal(t, "gpt-4-turbo", string(params.Model))
 	})
 }
+
+func TestOpenAIResponsesModel_BuildResponsesParams_ReasoningEffort(t *testing.T) {
+	t.Run("uses model default reasoning effort", func(t *testing.T) {
+		mdl := &openaiResponsesModel{
+			model:           "gpt-4o",
+			maxTokens:       4096,
+			reasoningEffort: "medium",
+		}
+
+		params := mdl.buildResponsesParams(Request{
+			Messages: []Message{{Role: "user", Content: "Hello"}},
+		})
+
+		assert.Equal(t, "medium", string(params.Reasoning.Effort))
+	})
+
+	t.Run("request reasoning effort overrides model default", func(t *testing.T) {
+		mdl := &openaiResponsesModel{
+			model:           "gpt-4o",
+			maxTokens:       4096,
+			reasoningEffort: "low",
+		}
+
+		params := mdl.buildResponsesParams(Request{
+			Messages:        []Message{{Role: "user", Content: "Hello"}},
+			ReasoningEffort: "high",
+		})
+
+		assert.Equal(t, "high", string(params.Reasoning.Effort))
+	})
+
+	t.Run("empty reasoning effort is omitted", func(t *testing.T) {
+		mdl := &openaiResponsesModel{
+			model:     "gpt-4o",
+			maxTokens: 4096,
+		}
+
+		params := mdl.buildResponsesParams(Request{
+			Messages: []Message{{Role: "user", Content: "Hello"}},
+		})
+
+		assert.Equal(t, "", string(params.Reasoning.Effort))
+	})
+}
+
+func TestOpenAIResponsesModel_Complete_ReasoningEffortUnsupportedFallback(t *testing.T) {
+	callCount := 0
+	var captured []responses.ResponseNewParams
+
+	mock := &mockOpenAIResponses{
+		newFunc: func(ctx context.Context, body responses.ResponseNewParams, opts ...option.RequestOption) (*responses.Response, error) {
+			callCount++
+			captured = append(captured, body)
+
+			if callCount == 1 {
+				return nil, &openai.Error{
+					StatusCode: http.StatusBadRequest,
+					Param:      "reasoning.effort",
+					Message:    "Unsupported parameter: 'reasoning.effort'",
+				}
+			}
+
+			return &responses.Response{
+				Output: []responses.ResponseOutputItemUnion{{
+					Type: "message",
+					Content: []responses.ResponseOutputMessageContentUnion{{
+						Type: "output_text",
+						Text: "ok",
+					}},
+				}},
+				Status: "completed",
+			}, nil
+		},
+	}
+
+	mdl := &openaiResponsesModel{
+		responses:       mock,
+		model:           "gpt-4o",
+		maxTokens:       4096,
+		maxRetries:      0,
+		reasoningEffort: "high",
+	}
+
+	resp, err := mdl.Complete(context.Background(), Request{
+		Messages: []Message{{Role: "user", Content: "Hello"}},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, 2, callCount)
+	require.Len(t, captured, 2)
+	assert.Equal(t, "high", string(captured[0].Reasoning.Effort))
+	assert.Equal(t, "", string(captured[1].Reasoning.Effort))
+	assert.Equal(t, "ok", resp.Message.Content)
+}

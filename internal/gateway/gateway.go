@@ -55,23 +55,7 @@ func DefaultRuntimeFactory(cfg *config.Config, sysPrompt string) (Runtime, error
 }
 
 func newRuntime(cfg *config.Config, sysPrompt string, skillRegs []api.SkillRegistration) (Runtime, error) {
-	var provider api.ModelFactory
-	switch cfg.Provider.Type {
-	case "openai":
-		provider = &model.OpenAIProvider{
-			APIKey:    cfg.Provider.APIKey,
-			BaseURL:   cfg.Provider.BaseURL,
-			ModelName: cfg.Agent.Model,
-			MaxTokens: cfg.Agent.MaxTokens,
-		}
-	default: // "anthropic" or empty
-		provider = &model.AnthropicProvider{
-			APIKey:    cfg.Provider.APIKey,
-			BaseURL:   cfg.Provider.BaseURL,
-			ModelName: cfg.Agent.Model,
-			MaxTokens: cfg.Agent.MaxTokens,
-		}
-	}
+	provider := runtimeModelFactory(cfg)
 
 	rt, err := api.New(context.Background(), api.Options{
 		ProjectRoot:   cfg.Agent.Workspace,
@@ -91,6 +75,26 @@ func newRuntime(cfg *config.Config, sysPrompt string, skillRegs []api.SkillRegis
 		return nil, fmt.Errorf("create runtime: %w", err)
 	}
 	return &runtimeAdapter{rt: rt}, nil
+}
+
+func runtimeModelFactory(cfg *config.Config) api.ModelFactory {
+	switch cfg.Provider.Type {
+	case "openai":
+		return &model.OpenAIProvider{
+			APIKey:          cfg.Provider.APIKey,
+			BaseURL:         cfg.Provider.BaseURL,
+			ModelName:       cfg.Agent.Model,
+			MaxTokens:       cfg.Agent.MaxTokens,
+			ReasoningEffort: cfg.ModelReasoningEffort(),
+		}
+	default: // "anthropic" or empty
+		return &model.AnthropicProvider{
+			APIKey:    cfg.Provider.APIKey,
+			BaseURL:   cfg.Provider.BaseURL,
+			ModelName: cfg.Agent.Model,
+			MaxTokens: cfg.Agent.MaxTokens,
+		}
+	}
 }
 
 type Gateway struct {

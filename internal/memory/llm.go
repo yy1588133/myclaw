@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -59,11 +60,12 @@ type LLMClient interface {
 }
 
 type llmClient struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	maxTokens  int
-	httpClient *http.Client
+	apiKey          string
+	baseURL         string
+	model           string
+	reasoningEffort string
+	maxTokens       int
+	httpClient      *http.Client
 }
 
 func NewLLMClient(cfg *config.Config) LLMClient {
@@ -91,6 +93,7 @@ func NewLLMClient(cfg *config.Config) LLMClient {
 	} else {
 		c.maxTokens = cfg.Agent.MaxTokens
 	}
+	c.reasoningEffort = cfg.ModelReasoningEffort()
 
 	return c
 }
@@ -155,31 +158,54 @@ func (c *llmClient) complete(prompt string) (string, error) {
 			"type": "json_object",
 		},
 	}
+	if c.reasoningEffort != "" {
+		body["reasoning_effort"] = c.reasoningEffort
+	}
+
+	content, statusCode, respBody, err := c.sendChatCompletion(baseURL, body)
+	if err == nil {
+		return content, nil
+	}
+
+	if c.reasoningEffort != "" && isReasoningEffortUnsupported(statusCode, respBody) {
+		log.Printf("[memory] warning: reasoning_effort unsupported by memory model; retrying without reasoning_effort")
+		delete(body, "reasoning_effort")
+		content, _, _, retryErr := c.sendChatCompletion(baseURL, body)
+		if retryErr == nil {
+			return content, nil
+		}
+		return "", retryErr
+	}
+
+	return "", err
+}
+
+func (c *llmClient) sendChatCompletion(baseURL string, body map[string]any) (string, int, []byte, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", 0, nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", 0, nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
+		return "", 0, nil, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", resp.StatusCode, nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("memory model http %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return "", resp.StatusCode, respBody, fmt.Errorf("memory model http %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var decoded struct {
@@ -190,14 +216,41 @@ func (c *llmClient) complete(prompt string) (string, error) {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return "", resp.StatusCode, respBody, fmt.Errorf("decode response: %w", err)
 	}
 	if len(decoded.Choices) == 0 {
-		return "", fmt.Errorf("empty choices in response")
+		return "", resp.StatusCode, respBody, fmt.Errorf("empty choices in response")
 	}
 	content := strings.TrimSpace(decoded.Choices[0].Message.Content)
 	if content == "" {
-		return "", fmt.Errorf("empty content in response")
+		return "", resp.StatusCode, respBody, fmt.Errorf("empty content in response")
 	}
-	return content, nil
+	return content, resp.StatusCode, respBody, nil
+}
+
+func isReasoningEffortUnsupported(statusCode int, respBody []byte) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+
+	var decoded struct {
+		Error struct {
+			Param   string `json:"param"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &decoded); err == nil {
+		paramName := strings.ToLower(strings.TrimSpace(decoded.Error.Param))
+		if paramName == "reasoning_effort" || paramName == "reasoning.effort" {
+			return true
+		}
+
+		message := strings.ToLower(strings.TrimSpace(decoded.Error.Message))
+		if strings.Contains(message, "reasoning_effort") || strings.Contains(message, "reasoning.effort") {
+			return true
+		}
+	}
+
+	bodyText := strings.ToLower(strings.TrimSpace(string(respBody)))
+	return strings.Contains(bodyText, "reasoning_effort") || strings.Contains(bodyText, "reasoning.effort")
 }

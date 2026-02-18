@@ -69,6 +69,26 @@ func TestNewTelegramChannel_Valid(t *testing.T) {
 	}
 }
 
+func TestTelegramChannel_TimeoutConfig_LongPollHasClientHeadroom(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	ch, err := NewTelegramChannel(config.TelegramConfig{Token: "fake-token"}, b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ch.httpClient == nil {
+		t.Fatal("http client should be initialized")
+	}
+	if ch.httpClient.Timeout != telegramHTTPTimeout {
+		t.Fatalf("http client timeout = %s, want %s", ch.httpClient.Timeout, telegramHTTPTimeout)
+	}
+
+	longPoll := time.Duration(telegramLongPollTimeoutSeconds) * time.Second
+	if telegramHTTPTimeout <= longPoll {
+		t.Fatalf("http timeout must exceed long poll timeout: http=%s, longPoll=%s", telegramHTTPTimeout, longPoll)
+	}
+}
+
 func TestToTelegramHTML(t *testing.T) {
 	tests := []struct {
 		input string
@@ -344,6 +364,33 @@ func TestTelegramChannel_HandleMessage_Allowed(t *testing.T) {
 		}
 	default:
 		t.Error("expected inbound message")
+	}
+}
+
+func TestTelegramChannel_HandleMessage_MissingSenderOrChat(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	ch, _ := NewTelegramChannel(config.TelegramConfig{Token: "fake-token"}, b)
+
+	tests := []*tgbotapi.Message{
+		{Chat: &tgbotapi.Chat{ID: 456}, Text: "hello"},
+		{From: &tgbotapi.User{ID: 123}, Text: "hello"},
+	}
+
+	for i, msg := range tests {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("case %d should not panic, recovered: %v", i, r)
+				}
+			}()
+			ch.handleMessage(msg)
+		}()
+
+		select {
+		case <-b.Inbound:
+			t.Fatalf("case %d should not enqueue inbound message", i)
+		default:
+		}
 	}
 }
 
@@ -926,6 +973,82 @@ func TestTelegramChannel_Send_HTMLError_Retry(t *testing.T) {
 	if err != nil {
 		t.Errorf("Send should succeed after retry: %v", err)
 	}
+}
+
+func TestTelegramChannel_Send_HTMLError_LongMessage_RetryUsesChunkAndContinues(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	ch, _ := NewTelegramChannel(config.TelegramConfig{Token: "fake-token"}, b)
+
+	bot := newChunkRecordingBot(true)
+	ch.SetBot(bot)
+
+	longContent := strings.Repeat("x", 5000)
+	err := ch.Send(bus.OutboundMessage{ChatID: "123", Content: longContent})
+	if err != nil {
+		t.Fatalf("Send should succeed after retry: %v", err)
+	}
+
+	if bot.callCount != 3 {
+		t.Fatalf("send call count = %d, want 3 (html fail + fallback + next chunk)", bot.callCount)
+	}
+	if len(bot.sentTexts) != 3 {
+		t.Fatalf("sent texts count = %d, want 3", len(bot.sentTexts))
+	}
+
+	if got := len(bot.sentTexts[1]); got > 4000 {
+		t.Fatalf("fallback chunk length = %d, want <= 4000", got)
+	}
+	if bot.sentTexts[1] != bot.sentTexts[0] {
+		t.Fatalf("fallback text should match failed HTML chunk")
+	}
+	if bot.parseModes[1] != "" {
+		t.Fatalf("fallback parse mode = %q, want empty", bot.parseModes[1])
+	}
+
+	if got := len(bot.sentTexts[2]); got != 1000 {
+		t.Fatalf("second chunk length = %d, want 1000", got)
+	}
+}
+
+type chunkRecordingBot struct {
+	self       tgbotapi.User
+	failFirst  bool
+	callCount  int
+	sentTexts  []string
+	parseModes []string
+}
+
+func newChunkRecordingBot(failFirst bool) *chunkRecordingBot {
+	return &chunkRecordingBot{
+		self:      tgbotapi.User{UserName: "testbot"},
+		failFirst: failFirst,
+	}
+}
+
+func (c *chunkRecordingBot) GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel {
+	return make(chan tgbotapi.Update)
+}
+
+func (c *chunkRecordingBot) StopReceivingUpdates() {}
+
+func (c *chunkRecordingBot) Send(msg tgbotapi.Chattable) (tgbotapi.Message, error) {
+	c.callCount++
+	if m, ok := msg.(tgbotapi.MessageConfig); ok {
+		c.sentTexts = append(c.sentTexts, m.Text)
+		c.parseModes = append(c.parseModes, m.ParseMode)
+	}
+	if c.failFirst && c.callCount == 1 {
+		return tgbotapi.Message{}, fmt.Errorf("HTML parse error")
+	}
+	return tgbotapi.Message{MessageID: 1}, nil
+}
+
+func (c *chunkRecordingBot) GetSelf() tgbotapi.User {
+	return c.self
+}
+
+func (c *chunkRecordingBot) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error) {
+	return tgbotapi.File{}, fmt.Errorf("not implemented")
 }
 
 type sendCountingBot struct {

@@ -20,6 +20,8 @@ type Service struct {
 	OnJob     func(job CronJob) (string, error)
 	cron      *rcron.Cron
 	entryMap  map[string]rcron.EntryID // job ID -> cron entry ID
+	cancel    context.CancelFunc
+	stopCh    chan struct{}
 }
 
 func NewService(storePath string) *Service {
@@ -30,6 +32,13 @@ func NewService(storePath string) *Service {
 }
 
 func (s *Service) Start(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	stopCh := make(chan struct{})
+	s.mu.Lock()
+	s.cancel = cancel
+	s.stopCh = stopCh
+	s.mu.Unlock()
+
 	if err := s.load(); err != nil {
 		log.Printf("[cron] warning: failed to load jobs: %v", err)
 	}
@@ -48,11 +57,15 @@ func (s *Service) Start(ctx context.Context) error {
 	log.Printf("[cron] started with %d jobs", len(s.jobs))
 
 	// Handle "every" and "at" jobs in a separate goroutine
-	go s.tickLoop(ctx)
+	go s.tickLoop(runCtx)
 
 	go func() {
-		<-ctx.Done()
-		s.Stop()
+		select {
+		case <-ctx.Done():
+			s.Stop()
+		case <-stopCh:
+			return
+		}
 	}()
 
 	return nil
@@ -85,6 +98,7 @@ func (s *Service) executeJob(job CronJob) {
 
 	for i := range s.jobs {
 		if s.jobs[i].ID == job.ID {
+			jobID := s.jobs[i].ID
 			s.jobs[i].State.LastRunAtMs = time.Now().UnixMilli()
 			if err != nil {
 				s.jobs[i].State.LastStatus = "error"
@@ -97,6 +111,10 @@ func (s *Service) executeJob(job CronJob) {
 			}
 
 			if s.jobs[i].DeleteAfterRun {
+				if entryID, ok := s.entryMap[jobID]; ok && s.cron != nil {
+					s.cron.Remove(entryID)
+					delete(s.entryMap, jobID)
+				}
 				s.jobs = append(s.jobs[:i], s.jobs[i+1:]...)
 			}
 			break
@@ -149,8 +167,26 @@ func (s *Service) tickLoop(ctx context.Context) {
 }
 
 func (s *Service) Stop() {
+	s.mu.Lock()
+	cancel := s.cancel
+	stopCh := s.stopCh
+	s.cancel = nil
+	s.stopCh = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if stopCh != nil {
+		close(stopCh)
+	}
+
 	if s.cron != nil {
-		s.cron.Stop()
+		stopCtx := s.cron.Stop()
+		select {
+		case <-stopCtx.Done():
+		case <-time.After(5 * time.Second):
+			log.Printf("[cron] stop timeout waiting for running jobs")
+		}
 	}
 	log.Printf("[cron] stopped")
 }
@@ -206,6 +242,18 @@ func (s *Service) EnableJob(id string, enabled bool) (*CronJob, error) {
 	for i := range s.jobs {
 		if s.jobs[i].ID == id {
 			s.jobs[i].Enabled = enabled
+			if s.jobs[i].Schedule.Kind == "cron" && s.cron != nil {
+				if enabled {
+					if _, ok := s.entryMap[id]; !ok {
+						s.registerJob(&s.jobs[i])
+					}
+				} else {
+					if entryID, ok := s.entryMap[id]; ok {
+						s.cron.Remove(entryID)
+						delete(s.entryMap, id)
+					}
+				}
+			}
 			_ = s.save()
 			job := s.jobs[i]
 			return &job, nil

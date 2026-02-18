@@ -190,3 +190,37 @@ func TestWebUIChannel_SendBroadcast(t *testing.T) {
 		}
 	}
 }
+
+func TestWebUIChannel_WebSocket_RejectsCrossOrigin(t *testing.T) {
+	b := bus.NewMessageBus(10)
+	cfg := config.WebUIConfig{Enabled: true}
+	gwCfg := config.GatewayConfig{Port: 19879}
+
+	ch, err := NewWebUIChannel(cfg, gwCfg, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := ch.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	headers := http.Header{}
+	headers.Set("Origin", "http://evil.example")
+	_, resp, err := websocket.Dial(ctx, "ws://localhost:19879/ws", &websocket.DialOptions{HTTPHeader: headers})
+	if err == nil {
+		t.Fatal("expected websocket dial to fail for cross-origin request")
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil HTTP response on rejected websocket upgrade")
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}

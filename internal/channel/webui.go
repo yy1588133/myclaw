@@ -40,6 +40,13 @@ type WebUIChannel struct {
 	nextID  atomic.Int64
 }
 
+const (
+	webUIReadTimeout       = 15 * time.Second
+	webUIReadHeaderTimeout = 10 * time.Second
+	webUIWriteTimeout      = 30 * time.Second
+	webUIIdleTimeout       = 60 * time.Second
+)
+
 func NewWebUIChannel(cfg config.WebUIConfig, gwCfg config.GatewayConfig, b *bus.MessageBus) (*WebUIChannel, error) {
 	port := gwCfg.Port
 	if port == 0 {
@@ -64,8 +71,12 @@ func (w *WebUIChannel) Start(ctx context.Context) error {
 	mux.HandleFunc("/ws", w.handleWS)
 
 	w.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", w.port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", w.port),
+		Handler:           mux,
+		ReadTimeout:       webUIReadTimeout,
+		ReadHeaderTimeout: webUIReadHeaderTimeout,
+		WriteTimeout:      webUIWriteTimeout,
+		IdleTimeout:       webUIIdleTimeout,
 	}
 
 	go func() {
@@ -79,9 +90,7 @@ func (w *WebUIChannel) Start(ctx context.Context) error {
 }
 
 func (w *WebUIChannel) handleWS(wr http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(wr, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	conn, err := websocket.Accept(wr, r, nil)
 	if err != nil {
 		log.Printf("[webui] websocket accept error: %v", err)
 		return

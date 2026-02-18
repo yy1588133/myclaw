@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -124,6 +125,66 @@ func TestService_StartStop(t *testing.T) {
 
 	cancel()
 	s.Stop()
+}
+
+func TestService_Start_ParentCancelInvokesStop(t *testing.T) {
+	tmpDir := t.TempDir()
+	s := NewService(filepath.Join(tmpDir, "jobs.json"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		stopped := s.cancel == nil && s.stopCh == nil
+		s.mu.Unlock()
+		if stopped {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	s.Stop()
+	t.Fatal("expected parent context cancellation to trigger Stop")
+}
+
+func TestService_Stop_StopsTickLoopWithoutParentCancel(t *testing.T) {
+	tmpDir := t.TempDir()
+	s := NewService(filepath.Join(tmpDir, "jobs.json"))
+
+	var executeCount atomic.Int32
+	s.OnJob = func(job CronJob) (string, error) {
+		executeCount.Add(1)
+		return "ok", nil
+	}
+
+	job := NewCronJob("manual-stop", Schedule{Kind: "every", EveryMs: 100}, Payload{Message: "tick"})
+	job.State.LastRunAtMs = time.Now().UnixMilli() - 200
+	s.jobs = append(s.jobs, job)
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for executeCount.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if executeCount.Load() == 0 {
+		t.Fatal("expected at least one tick execution before Stop")
+	}
+
+	s.Stop()
+	countAfterStop := executeCount.Load()
+	time.Sleep(1300 * time.Millisecond)
+
+	if executeCount.Load() != countAfterStop {
+		t.Fatalf("tickLoop should stop after Stop; count changed from %d to %d", countAfterStop, executeCount.Load())
+	}
 }
 
 func TestService_Persistence(t *testing.T) {
@@ -405,6 +466,94 @@ func TestService_RemoveJob_WithCron(t *testing.T) {
 	}
 
 	s.Stop()
+}
+
+func TestService_EnableJob_CronToggleUpdatesEntryMap(t *testing.T) {
+	tmpDir := t.TempDir()
+	s := NewService(filepath.Join(tmpDir, "jobs.json"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer s.Stop()
+
+	job, err := s.AddJob("toggle-cron", Schedule{Kind: "cron", Expr: "*/5 * * * * *"}, Payload{Message: "x"})
+	if err != nil {
+		t.Fatalf("AddJob error: %v", err)
+	}
+
+	if len(s.entryMap) != 1 {
+		t.Fatalf("expected 1 cron entry after add, got %d", len(s.entryMap))
+	}
+
+	updated, err := s.EnableJob(job.ID, false)
+	if err != nil {
+		t.Fatalf("EnableJob(false) error: %v", err)
+	}
+	if updated.Enabled {
+		t.Fatalf("job should be disabled")
+	}
+	if len(s.entryMap) != 0 {
+		t.Fatalf("expected 0 cron entries after disable, got %d", len(s.entryMap))
+	}
+
+	updated, err = s.EnableJob(job.ID, true)
+	if err != nil {
+		t.Fatalf("EnableJob(true) error: %v", err)
+	}
+	if !updated.Enabled {
+		t.Fatalf("job should be enabled")
+	}
+	if len(s.entryMap) != 1 {
+		t.Fatalf("expected 1 cron entry after re-enable, got %d", len(s.entryMap))
+	}
+}
+
+func TestService_ExecuteJob_DeleteAfterRun_CronRemovesEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	s := NewService(filepath.Join(tmpDir, "jobs.json"))
+
+	s.OnJob = func(job CronJob) (string, error) {
+		return "done", nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer s.Stop()
+
+	job, err := s.AddJob("delete-cron", Schedule{Kind: "cron", Expr: "*/5 * * * * *"}, Payload{Message: "x"})
+	if err != nil {
+		t.Fatalf("AddJob error: %v", err)
+	}
+
+	if len(s.entryMap) != 1 {
+		t.Fatalf("expected 1 cron entry after add, got %d", len(s.entryMap))
+	}
+
+	var jobCopy CronJob
+	s.mu.Lock()
+	for i := range s.jobs {
+		if s.jobs[i].ID == job.ID {
+			s.jobs[i].DeleteAfterRun = true
+			jobCopy = s.jobs[i]
+			break
+		}
+	}
+	s.mu.Unlock()
+
+	s.executeJob(jobCopy)
+
+	if len(s.ListJobs()) != 0 {
+		t.Fatalf("expected no jobs after delete-after-run execution")
+	}
+	if len(s.entryMap) != 0 {
+		t.Fatalf("expected no cron entries after delete-after-run execution, got %d", len(s.entryMap))
+	}
 }
 
 func TestTruncate(t *testing.T) {

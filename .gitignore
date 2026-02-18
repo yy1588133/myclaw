@@ -52,3 +52,4 @@ bin/
 id_rsa
 id_dsa
 .ace-tool/
+.sisyphus/

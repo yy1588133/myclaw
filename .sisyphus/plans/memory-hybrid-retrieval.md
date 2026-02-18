@@ -59,10 +59,10 @@ Implement a robust, qmd-inspired hybrid retrieval pipeline for Tier2 memories in
 - Integration and benchmark coverage
 
 ### Definition of Done
-- [ ] `go test ./internal/memory/... -count=1` passes with new tests
-- [ ] `go test ./internal/gateway/... -count=1` passes
-- [ ] Classic mode behavior remains unchanged unless enhanced mode explicitly enabled
-- [ ] Enhanced mode returns ranked results using hybrid + rerank path when dependencies are configured
+- [x] `go test ./internal/memory/... -count=1` passes with new tests
+- [x] `go test ./internal/gateway/... -count=1` passes
+- [x] Classic mode behavior remains unchanged unless enhanced mode explicitly enabled
+- [x] Enhanced mode returns ranked results using hybrid + rerank path when dependencies are configured
 
 ### Must Have
 - Full qmd-style stage flow in Go (adapted to current architecture)
@@ -167,7 +167,7 @@ Wave 7 (After Wave 6)
 
 ## TODOs
 
-- [ ] 0. Establish Regression Baseline Gate
+- [x] 0. Establish Regression Baseline Gate
 
   **What to do**:
   - Run existing memory/gateway tests as immutable baseline before any changes
@@ -228,7 +228,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 1. Add Schema Versioning and Embedding Migration
+- [x] 1. Add Schema Versioning and Embedding Migration
 
   **What to do**:
   - Introduce schema migration versioning via `PRAGMA user_version`
@@ -300,7 +300,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 2. Build Vector Primitives (BLOB Codec + Cosine + Bench)
+- [x] 2. Build Vector Primitives (BLOB Codec + Cosine + Bench)
 
   **What to do**:
   - Add `internal/memory/vector.go` for:
@@ -369,7 +369,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 3. Extend Config for Retrieval Mode + Embedding + Rerank
+- [x] 3. Extend Config for Retrieval Mode + Embedding + Rerank
 
   **What to do**:
   - Extend `MemoryConfig` with nested config blocks:
@@ -440,7 +440,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 4. Implement Embedder Client (Ollama + OpenAI-Compatible API)
+- [x] 4. Implement Embedder Client (Ollama + OpenAI-Compatible API)
 
   **What to do**:
   - Add `internal/memory/embedder.go` with interface:
@@ -512,7 +512,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 5. Implement Reranker Client (API Rerank + LLM Scoring Fallback)
+- [x] 5. Implement Reranker Client (API Rerank + LLM Scoring Fallback)
 
   **What to do**:
   - Add `internal/memory/reranker.go` with interface:
@@ -581,7 +581,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 6. Add Query Expansion Client + Stage-1 Strong Signal Gate
+- [x] 6. Add Query Expansion Client + Stage-1 Strong Signal Gate
 
   **What to do**:
   - Add `internal/memory/query_expander.go` with constrained JSON-output expansion
@@ -648,7 +648,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 7. Implement Enhanced Retrieval Stages 3-6 (Parallel Hybrid + RRF + Rerank + Position Blend)
+- [x] 7. Implement Enhanced Retrieval Stages 3-6 (Parallel Hybrid + RRF + Rerank + Position Blend)
 
   **What to do**:
   - Add enhanced retrieval implementation (recommended file: `internal/memory/pipeline.go`)
@@ -718,7 +718,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 8. Integrate Embedding Write Path + Safe Async Update + Backfill
+- [x] 8. Integrate Embedding Write Path + Safe Async Update + Backfill
 
   **What to do**:
   - Preserve `WriteTier2` compatibility, add non-breaking path to capture inserted row id
@@ -788,7 +788,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 9. Wire Retrieval Mode and Clients into Gateway
+- [x] 9. Wire Retrieval Mode and Clients into Gateway
 
   **What to do**:
   - Add embedder/reranker/expander initialization in gateway setup
@@ -856,7 +856,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 10. Run Full Verification + Performance Guardrails
+- [x] 10. Run Full Verification + Performance Guardrails
 
   **What to do**:
   - Execute full memory/gateway test suites
@@ -924,7 +924,7 @@ Wave 7 (After Wave 6)
 
 ---
 
-- [ ] 11. Update Knowledge and Operator Docs
+- [x] 11. Update Knowledge and Operator Docs
 
   **What to do**:
   - Update memory module guidance and project docs for new retrieval modes/config
@@ -1020,9 +1020,9 @@ go test ./internal/memory/... -bench BenchmarkVectorBruteForce10k384 -benchtime=
 
 ### Final Checklist
 
-- [ ] All tasks completed with evidence logs in `.sisyphus/evidence/`
-- [ ] Classic mode remains behavior-compatible with current production behavior
-- [ ] Enhanced mode works with both local Ollama and remote API providers
-- [ ] Migration works for fresh and existing DBs without manual intervention
-- [ ] No AGENTS.md anti-pattern violations
-- [ ] No human/manual verification steps required
+- [x] All tasks completed with evidence logs in `.sisyphus/evidence/`
+- [x] Classic mode remains behavior-compatible with current production behavior
+- [x] Enhanced mode works with both local Ollama and remote API providers
+- [x] Migration works for fresh and existing DBs without manual intervention
+- [x] No AGENTS.md anti-pattern violations
+- [x] No human/manual verification steps required

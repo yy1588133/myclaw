@@ -498,8 +498,9 @@ Pipeline order:
 | `pr-verify` | PR to `main`, manual | Strict PR gate: lint/vet/test/race/build/smoke |
 | `secret-audit` | PR to `main`, manual | Secret scan across tracked files and git history |
 | `ci` | push/PR to `main` | Basic test + build |
-| `deploy-main` | push to `main`, manual | Self-hosted deploy via `/usr/local/bin/myclaw-deploy-run` |
+| `tag-main` | push to `main` | Auto-create next `vX.Y.Z` tag for release pipeline |
 | `release` | tag `v*` | GitHub release + multi-platform binaries + GHCR image |
+| `deploy-main` | release success, manual | Self-hosted deploy via `/usr/local/bin/myclaw-deploy-run` |
 | `rollback` | manual | Create rollback PR branch from target ref and trigger checks |
 
 For merge readiness, treat `pr-verify` and `secret-audit` as the primary quality gates.

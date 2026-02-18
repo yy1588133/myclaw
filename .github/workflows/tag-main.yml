@@ -1,0 +1,56 @@
+name: tag-main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create next semver tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags origin
+
+          EXISTING_TAG="$(git tag --points-at "$GITHUB_SHA" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          if [[ -n "$EXISTING_TAG" ]]; then
+            echo "Semver tag already exists on this commit: $EXISTING_TAG"
+            exit 0
+          fi
+
+          LATEST_TAG="$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+
+          if [[ -z "$LATEST_TAG" ]]; then
+            MAJOR=0
+            MINOR=1
+            PATCH=0
+          else
+            VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEXT_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          while git rev-parse -q --verify "refs/tags/${NEXT_TAG}" >/dev/null; do
+            PATCH=$((PATCH + 1))
+            NEXT_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          done
+
+          git tag "$NEXT_TAG" "$GITHUB_SHA"
+          git push origin "$NEXT_TAG"
+
+          echo "created_tag=${NEXT_TAG}"

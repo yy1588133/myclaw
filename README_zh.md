@@ -394,8 +394,9 @@ scripts/autolab/verify.sh
 | `pr-verify` | PR 到 `main`、手动触发 | 严格 PR 关卡：lint/vet/test/race/build/smoke |
 | `secret-audit` | PR 到 `main`、手动触发 | 扫描已跟踪文件与 git 历史中的敏感信息 |
 | `ci` | push/PR 到 `main` | 基础 test + build |
-| `deploy-main` | push 到 `main`、手动触发 | 通过 `/usr/local/bin/myclaw-deploy-run` 在自托管 runner 部署 |
+| `tag-main` | push 到 `main` | 自动创建下一个 `vX.Y.Z` 标签以触发发布流水线 |
 | `release` | tag `v*` | 发布 GitHub Release + 多平台二进制 + GHCR 镜像 |
+| `deploy-main` | release 成功后、手动触发 | 通过 `/usr/local/bin/myclaw-deploy-run` 在自托管 runner 部署 |
 | `rollback` | 手动触发 | 从目标 ref 创建回滚 PR 分支并触发检查 |
 
 对于合并可用性，建议将 `pr-verify` 与 `secret-audit` 视为主要质量门禁。

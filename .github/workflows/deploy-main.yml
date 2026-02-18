@@ -1,8 +1,9 @@
 name: deploy-main
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -13,12 +14,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    runs-on: [self-hosted, Linux, X64, myclaw-host]
+  deploy-linux:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     steps:
-      - name: Deploy on self-hosted runner
+      - name: Deploy on self-hosted Linux runner
         shell: bash
         run: |
           set -euo pipefail
           sudo -n /usr/local/bin/myclaw-deploy-run
+
+  deploy-windows:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy on self-hosted Windows runner
+        shell: pwsh
+        run: ./scripts/autolab/deploy-main.ps1

@@ -20,6 +20,12 @@ import (
 
 const telegramChannelName = "telegram"
 
+const (
+	telegramLongPollTimeoutSeconds = 30
+	telegramHTTPTimeout            = 70 * time.Second
+	telegramFileDownloadTimeout    = 30 * time.Second
+)
+
 // TelegramBot interface for mocking telegram bot API
 type TelegramBot interface {
 	GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel
@@ -90,8 +96,10 @@ func NewTelegramChannelWithFactory(cfg config.TelegramConfig, b *bus.MessageBus,
 		BaseChannel: NewBaseChannel(telegramChannelName, b, cfg.AllowFrom),
 		token:       cfg.Token,
 		proxy:       cfg.Proxy,
-		httpClient:  http.DefaultClient,
-		botFactory:  factory,
+		httpClient: &http.Client{
+			Timeout: telegramHTTPTimeout,
+		},
+		botFactory: factory,
 	}
 	return ch, nil
 }
@@ -104,10 +112,11 @@ func (t *TelegramChannel) initBot() error {
 			return fmt.Errorf("parse proxy url: %w", err)
 		}
 		client = &http.Client{
+			Timeout:   telegramHTTPTimeout,
 			Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
 		}
 	} else {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: telegramHTTPTimeout}
 	}
 	t.httpClient = client
 
@@ -128,7 +137,7 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 	ctx, t.cancel = context.WithCancel(ctx)
 
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
+	u.Timeout = telegramLongPollTimeoutSeconds
 	updates := t.bot.GetUpdatesChan(u)
 
 	go func() {
@@ -150,6 +159,11 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 }
 
 func (t *TelegramChannel) handleMessage(msg *tgbotapi.Message) {
+	if msg == nil || msg.From == nil || msg.Chat == nil {
+		log.Printf("[telegram] dropped invalid message: missing sender or chat")
+		return
+	}
+
 	senderID := strconv.FormatInt(msg.From.ID, 10)
 
 	if !t.IsAllowed(senderID) {
@@ -243,7 +257,15 @@ func (t *TelegramChannel) downloadFileData(fileID string) ([]byte, error) {
 		client = http.DefaultClient
 	}
 
-	resp, err := client.Get(file.Link(t.token))
+	ctx, cancel := context.WithTimeout(context.Background(), telegramFileDownloadTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, file.Link(t.token), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build telegram file request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download telegram file: %w", err)
 	}
@@ -313,11 +335,11 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		if _, err := t.bot.Send(tgMsg); err != nil {
 			// Retry without HTML parse mode
 			tgMsg.ParseMode = ""
-			tgMsg.Text = msg.Content
+			tgMsg.Text = chunk
 			if _, err2 := t.bot.Send(tgMsg); err2 != nil {
 				return fmt.Errorf("send telegram message: %w", err2)
 			}
-			return nil
+			continue
 		}
 	}
 	return nil

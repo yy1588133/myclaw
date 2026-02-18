@@ -399,6 +399,8 @@ scripts/autolab/verify.sh
 | `deploy-main` | release 成功后、手动触发 | 通过 `/usr/local/bin/myclaw-deploy-run` 在自托管 runner 部署 |
 | `rollback` | 手动触发 | 从目标 ref 创建回滚 PR 分支并触发检查 |
 
+`tag-main` 需要配置仓库 Secret：`RELEASE_TAG_PUSH_TOKEN`（具备 contents write 权限的 PAT），以便推送版本标签后能够触发 `release` 工作流。
+
 对于合并可用性，建议将 `pr-verify` 与 `secret-audit` 视为主要质量门禁。
 
 ## 许可证

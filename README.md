@@ -503,6 +503,8 @@ Pipeline order:
 | `deploy-main` | release success, manual | Self-hosted deploy via `/usr/local/bin/myclaw-deploy-run` |
 | `rollback` | manual | Create rollback PR branch from target ref and trigger checks |
 
+`tag-main` requires a repository secret named `RELEASE_TAG_PUSH_TOKEN` (PAT with contents write) to push version tags in a way that can trigger the `release` workflow.
+
 For merge readiness, treat `pr-verify` and `secret-audit` as the primary quality gates.
 
 ## License

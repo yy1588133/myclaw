@@ -20,9 +20,9 @@ myclaw is a personal AI assistant built on `agentsdk-go` (Go 1.24). It supports 
 │   ├── heartbeat/       # Periodic HEARTBEAT.md trigger (default every 30m)
 │   ├── memory/          # SQLite tiered memory engine + migration from legacy files
 │   └── skills/          # Workspace skill loader and registration
-├── scripts/autolab/     # Branch, verify, submit, promote, rollback, deploy scripts
+├── scripts/autolab/     # Branch, verify, submit, promote, rollback scripts
 ├── .githooks/           # local branch policy + pre-push verification gate
-├── .github/workflows/   # ci, pr-verify, deploy-main, rollback, release, secret-audit
+├── .github/workflows/   # ci, pr-verify, rollback, release, secret-audit, tag-main
 ├── workspace/           # Prompt assets synced to ~/.myclaw/workspace
 ├── Dockerfile           # Multi-stage image, defaults to `myclaw gateway`
 └── docker-compose.yml   # myclaw service + optional cloudflared tunnel profile
@@ -39,7 +39,7 @@ myclaw is a personal AI assistant built on `agentsdk-go` (Go 1.24). It supports 
 | Add memory features | `internal/memory/engine.go` + `internal/memory/*` | SQLite tiers (1/2/3), retrieval, extraction, compression |
 | Modify CI checks | `.github/workflows/pr-verify.yml` + `.github/workflows/ci.yml` | PR strict verify + basic CI |
 | Change local verification | `scripts/autolab/verify.sh` | Called by pre-push hook |
-| Modify deployment | `.github/workflows/deploy-main.yml` + `scripts/autolab/deploy-main.sh` | Relies on external `/usr/local/bin/myclaw-deploy-run` |
+| Modify release pipeline | `.github/workflows/tag-main.yml` + `.github/workflows/release.yml` | Manual production deploy uses downloaded release binaries |
 
 ## CODE MAP
 
@@ -141,7 +141,7 @@ make tunnel
 
 ## NOTES
 - **License Discrepancy**: `README.md` claims an MIT license, but no `LICENSE` file exists at the root. One should be added for clarity.
-- **External CI/CD Dependency**: The CI/CD deployment process relies on an external host-side wrapper script (`/usr/local/bin/myclaw-deploy-run`), which is not part of the repository and couples deployments to the specific host environment.
+- **Manual Production Deploy**: CI produces release artifacts and GHCR images, but production rollout is manual by downloading a selected release binary and restarting the service.
 - **Configuration Location**: Project configuration is split between `config.json` (usually in `~/.myclaw/`) and in-repo `workspace/` files (`AGENTS.md`, `SOUL.md`), which can be less typical than fully in-repo config.
 - **Makefile Inconsistencies**: `.PHONY` declarations in `Makefile` are incomplete, and install hints (`brew install ...`) are macOS-centric.
 - **Workflow Split**: Both `ci.yml` and `pr-verify.yml` run overlapping checks (tests/build), so contributor docs should reference the stricter `pr-verify.yml` as merge gate.

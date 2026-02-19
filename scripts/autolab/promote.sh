@@ -21,10 +21,5 @@ fi
 
 gh pr merge "$TARGET" --repo "$REPO" --squash --delete-branch
 
-if [[ "${AUTO_DEPLOY:-1}" == "1" ]]; then
-  echo "promote=merged"
-  echo "deploy=queued_by_github_actions"
-else
-  echo "promote=merged"
-  echo "deploy=disabled_request_ignored_for_push_trigger"
-fi
+echo "promote=merged"
+echo "deploy=manual_from_release_required"

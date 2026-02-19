@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/cexll/agentsdk-go/pkg/api"
@@ -41,6 +42,47 @@ func (r *runtimeWrapper) Close() {
 type RuntimeFactory func(cfg *config.Config) (Runtime, error)
 
 var newRuntime = api.New
+
+var version = "dev"
+
+func resolvedVersion() string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	}
+	if v != "dev" {
+		return v
+	}
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info == nil {
+		return v
+	}
+	if mv := strings.TrimSpace(info.Main.Version); mv != "" && mv != "(devel)" {
+		return mv
+	}
+
+	var revision string
+	dirty := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = strings.TrimSpace(setting.Value)
+		case "vcs.modified":
+			dirty = strings.TrimSpace(setting.Value) == "true"
+		}
+	}
+	if revision == "" {
+		return v
+	}
+	if len(revision) > 7 {
+		revision = revision[:7]
+	}
+	if dirty {
+		return fmt.Sprintf("%s+%s-dirty", v, revision)
+	}
+	return fmt.Sprintf("%s+%s", v, revision)
+}
 
 // DefaultRuntimeFactory creates the default agentsdk-go runtime
 func DefaultRuntimeFactory(cfg *config.Config) (Runtime, error) {
@@ -148,6 +190,10 @@ var statusCmd = &cobra.Command{
 var messageFlag string
 
 func init() {
+	rootCmd.Version = resolvedVersion()
+	rootCmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+	rootCmd.Flags().BoolP("version", "v", false, "version for myclaw")
+
 	agentCmd.Flags().StringVarP(&messageFlag, "message", "m", "", "Single message to send")
 	rootCmd.AddCommand(agentCmd, gatewayCmd, onboardCmd, statusCmd)
 }

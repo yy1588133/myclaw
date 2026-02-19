@@ -500,8 +500,11 @@ Pipeline order:
 | `ci` | push/PR to `main` | Basic test + build |
 | `tag-main` | push to `main` | Auto-create next `vX.Y.Z` tag for release pipeline |
 | `release` | tag `v*` | GitHub release + multi-platform binaries + GHCR image |
-| `deploy-main` | release success, manual | Self-hosted deploy via `/usr/local/bin/myclaw-deploy-run` |
 | `rollback` | manual | Create rollback PR branch from target ref and trigger checks |
+
+`tag-main` requires a repository secret named `RELEASE_TAG_PUSH_TOKEN` (PAT with contents write) to push version tags in a way that can trigger the `release` workflow.
+
+Production deployment is manual: download the target binary from GitHub Releases, replace the service binary on your host, and restart `myclaw`.
 
 For merge readiness, treat `pr-verify` and `secret-audit` as the primary quality gates.
 

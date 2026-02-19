@@ -396,8 +396,11 @@ scripts/autolab/verify.sh
 | `ci` | push/PR 到 `main` | 基础 test + build |
 | `tag-main` | push 到 `main` | 自动创建下一个 `vX.Y.Z` 标签以触发发布流水线 |
 | `release` | tag `v*` | 发布 GitHub Release + 多平台二进制 + GHCR 镜像 |
-| `deploy-main` | release 成功后、手动触发 | 通过 `/usr/local/bin/myclaw-deploy-run` 在自托管 runner 部署 |
 | `rollback` | 手动触发 | 从目标 ref 创建回滚 PR 分支并触发检查 |
+
+`tag-main` 需要配置仓库 Secret：`RELEASE_TAG_PUSH_TOKEN`（具备 contents write 权限的 PAT），以便推送版本标签后能够触发 `release` 工作流。
+
+生产部署改为手动执行：从 GitHub Releases 下载目标版本二进制，替换主机上的服务程序并重启 `myclaw`。
 
 对于合并可用性，建议将 `pr-verify` 与 `secret-audit` 视为主要质量门禁。
 

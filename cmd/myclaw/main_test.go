@@ -16,6 +16,30 @@ import (
 	"github.com/stellarlinkco/myclaw/internal/memory"
 )
 
+func executeRootCommandForTest(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+
+	oldOut := rootCmd.OutOrStdout()
+	oldErr := rootCmd.ErrOrStderr()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs(args)
+
+	err := rootCmd.Execute()
+
+	// Reset command state for subsequent tests.
+	_ = rootCmd.Flags().Set("version", "false")
+	rootCmd.SetArgs(nil)
+	rootCmd.SetOut(oldOut)
+	rootCmd.SetErr(oldErr)
+
+	combined := stdout.String() + stderr.String()
+	return combined, err
+}
+
 func TestWriteIfNotExists_NewFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.txt")
@@ -454,6 +478,50 @@ func TestInit(t *testing.T) {
 	flag := agentCmd.Flags().Lookup("message")
 	if flag == nil {
 		t.Error("message flag should exist")
+	}
+
+	versionFlag := rootCmd.Flags().Lookup("version")
+	if versionFlag == nil {
+		t.Fatal("version flag should exist")
+	}
+	if versionFlag.Shorthand != "v" {
+		t.Fatalf("version shorthand = %q, want %q", versionFlag.Shorthand, "v")
+	}
+}
+
+func TestRootVersionFlagLong(t *testing.T) {
+	output, err := executeRootCommandForTest(t, "--version")
+	if err != nil {
+		t.Fatalf("rootCmd.Execute error: %v", err)
+	}
+
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		t.Fatal("version output should not be empty")
+	}
+	if !strings.HasPrefix(trimmed, rootCmd.Name()+" ") {
+		t.Fatalf("version output = %q, want prefix %q", trimmed, rootCmd.Name()+" ")
+	}
+	if !strings.Contains(trimmed, rootCmd.Version) {
+		t.Fatalf("version output = %q, want contain version %q", trimmed, rootCmd.Version)
+	}
+}
+
+func TestRootVersionFlagShort(t *testing.T) {
+	output, err := executeRootCommandForTest(t, "-v")
+	if err != nil {
+		t.Fatalf("rootCmd.Execute error: %v", err)
+	}
+
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		t.Fatal("version output should not be empty")
+	}
+	if !strings.HasPrefix(trimmed, rootCmd.Name()+" ") {
+		t.Fatalf("version output = %q, want prefix %q", trimmed, rootCmd.Name()+" ")
+	}
+	if !strings.Contains(trimmed, rootCmd.Version) {
+		t.Fatalf("version output = %q, want contain version %q", trimmed, rootCmd.Version)
 	}
 }
 
